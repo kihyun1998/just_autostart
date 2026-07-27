@@ -2,14 +2,19 @@
 library;
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:just_autostart/just_autostart.dart';
 import 'package:just_autostart/src/backends/windows/registry.dart';
 import 'package:just_autostart/src/backends/windows/windows_run_key_backend.dart';
 import 'package:test/test.dart';
 
-const _scratchPath = r'Software\just_autostart_test_backend';
+import 'startup_approval_fixtures.dart';
+
+const _scratchPath = r'Software\just_autostart_test_backend\Run';
+const _approvalPath = r'Software\just_autostart_test_backend\Approved';
 const _scratchKey = RegistryLocation(path: _scratchPath);
+const _approvalScratchKey = RegistryLocation(path: _approvalPath);
 const _registry = WindowsRegistry();
 
 /// A path that certainly exists, so `enable()` gets past its existence check.
@@ -34,15 +39,31 @@ WindowsRunKeyBackend _backend({
   return WindowsRunKeyBackend(
     config: _config(executablePath: executablePath, args: args),
     runKey: _scratchKey,
+    approvalKey: _approvalScratchKey,
   );
 }
 
 String? rawStoredValue() =>
     _registry.readString(_scratchKey, 'JustAutostartTest');
 
+Uint8List? rawApprovalValue() =>
+    _registry.readBinary(_approvalScratchKey, 'JustAutostartTest');
+
+/// Plants the value Windows writes when a user switches the entry off in Task
+/// Manager: an odd first byte, then the FILETIME of the moment they did it.
+void plantUserVeto() {
+  _registry.writeBinary(
+    _approvalScratchKey,
+    'JustAutostartTest',
+    realDisabledApproval(),
+  );
+}
+
 void main() {
   setUp(() {
-    _registry.deleteValue(_scratchKey, 'JustAutostartTest');
+    _registry
+      ..deleteValue(_scratchKey, 'JustAutostartTest')
+      ..deleteValue(_approvalScratchKey, 'JustAutostartTest');
   });
 
   tearDownAll(() {
@@ -106,6 +127,7 @@ void main() {
       await expectLater(backend.enable(), throwsA(anything));
 
       expect(rawStoredValue(), isNull);
+      expect(rawApprovalValue(), isNull);
     });
   });
 
@@ -257,6 +279,154 @@ void main() {
       await _backend().disable();
 
       expect(rawStoredValue(), r'"C:\old\location\app.exe" --daemon');
+    });
+  });
+
+  group("the user's Task Manager toggle", () {
+    test('isEnabled is true when no approval value exists', () async {
+      // Windows writes nothing here until the toggle is first touched, so a
+      // freshly registered entry has no approval value and is still enabled.
+      _registry.writeString(
+        _scratchKey,
+        'JustAutostartTest',
+        '"$_realExecutable"',
+      );
+
+      expect(rawApprovalValue(), isNull);
+      expect(await _backend().isEnabled(), isTrue);
+    });
+
+    test('isEnabled is false once the user has switched it off', () async {
+      await _backend().enable();
+      plantUserVeto();
+
+      expect(await _backend().isEnabled(), isFalse);
+    });
+
+    // The registration is untouched — the entry is still "registered", it just
+    // will not run. Reporting on the registration alone is the lie this ticket
+    // exists to remove.
+    test('a veto does not disturb the registration itself', () async {
+      await _backend().enable();
+      plantUserVeto();
+
+      expect(rawStoredValue(), '"$_realExecutable"');
+      expect(await _backend().isEnabled(), isFalse);
+    });
+
+    test('enable writes the approval value Windows itself writes', () async {
+      await _backend().enable();
+
+      expect(
+        rawApprovalValue(),
+        Uint8List.fromList([2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+      );
+    });
+
+    test('enable stores it as REG_BINARY', () async {
+      await _backend().enable();
+
+      final probe = Process.runSync('reg', [
+        'query',
+        r'HKCU\' + _approvalPath,
+        '/v',
+        'JustAutostartTest',
+      ]);
+      expect(probe.exitCode, 0);
+      expect(probe.stdout as String, contains('REG_BINARY'));
+    });
+
+    // The pinned product decision: `enable()` overrides the user's veto, the
+    // same way `launch_at_startup` does. The calling application is expected to
+    // have asked its user first.
+    test('enable clears a veto the user had set', () async {
+      plantUserVeto();
+
+      await _backend().enable();
+
+      expect(await _backend().isEnabled(), isTrue);
+      expect(rawApprovalValue()!.first, 2);
+    });
+
+    test('disable removes both stores', () async {
+      await _backend().enable();
+
+      await _backend().disable();
+
+      expect(rawStoredValue(), isNull);
+      expect(rawApprovalValue(), isNull);
+    });
+
+    test('disable removes the approval value even after a veto', () async {
+      await _backend().enable();
+      plantUserVeto();
+
+      await _backend().disable();
+
+      expect(rawStoredValue(), isNull);
+      expect(rawApprovalValue(), isNull);
+    });
+
+    // The sacred path reaches the approval store too: if the registration is
+    // not ours, neither value is touched.
+    test('disable leaves a third party approval value alone', () async {
+      const foreign = r'"C:\Program Files\OtherVendor\other.exe" /background';
+      _registry.writeString(_scratchKey, 'JustAutostartTest', foreign);
+      plantUserVeto();
+
+      await _backend().disable();
+
+      expect(rawStoredValue(), foreign);
+      expect(rawApprovalValue(), isNotNull);
+    });
+
+    test('disable is idempotent across both stores', () async {
+      await _backend().enable();
+
+      await _backend().disable();
+      await _backend().disable();
+
+      expect(rawStoredValue(), isNull);
+      expect(rawApprovalValue(), isNull);
+    });
+
+    test(
+      'disable does not error when only the approval value is absent',
+      () async {
+        await _backend().enable();
+        _registry.deleteValue(_approvalScratchKey, 'JustAutostartTest');
+
+        await expectLater(_backend().disable(), completes);
+
+        expect(rawStoredValue(), isNull);
+      },
+    );
+
+    // An orphaned approval value — its registration already removed by an
+    // uninstaller, another autostart manager, or a crash between this package's
+    // own two deletes — is deliberately left alone. Under a name we do not
+    // currently own it cannot be attributed: it might be this application's
+    // leftover, or a third party's, and a third party's *is the user's veto of
+    // that application*. Clearing it would silently re-enable something they
+    // switched off. It is inert while no registration exists, and `enable()`
+    // overwrites it.
+    test('disable leaves an orphaned approval value alone', () async {
+      await _backend().enable();
+      _registry.deleteValue(_scratchKey, 'JustAutostartTest');
+
+      await _backend().disable();
+
+      expect(rawApprovalValue(), isNotNull);
+    });
+
+    test('enable repairs an orphaned approval value', () async {
+      plantUserVeto();
+      expect(rawStoredValue(), isNull);
+
+      await _backend().enable();
+
+      expect(rawApprovalValue()!.first, 2);
+      expect(await _backend().isEnabled(), isTrue);
     });
   });
 }

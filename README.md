@@ -23,10 +23,15 @@ to build against; macOS is next.
 > runtime API can suppress it. The Task Scheduler mechanism exists to solve
 > that, and is not built yet.
 
-> **`isEnabled()` does not yet see the Task Manager toggle.** Windows records a
-> user switching an entry off in a *second* registry key, and this version reads
-> only the first — so an entry the user disabled still reports as enabled. Being
-> fixed next.
+### The user can override you, and `isEnabled()` says so
+
+Windows records a user switching an entry off in Task Manager's "Startup apps"
+tab in a **second** registry key, separate from the one an application writes.
+`isEnabled()` reads both, so it reports `false` for an entry the user has
+disabled — your toggle will not contradict what Windows is showing them.
+
+`enable()` **clears** that veto, matching `launch_at_startup`. Call it in
+response to a user action, not on every launch.
 
 ## Usage
 

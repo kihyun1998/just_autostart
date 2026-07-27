@@ -2,10 +2,13 @@
 library;
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:just_autostart/just_autostart.dart';
 import 'package:just_autostart/src/backends/windows/registry.dart';
 import 'package:test/test.dart';
+
+import 'startup_approval_fixtures.dart';
 
 /// A throwaway subkey under the current user. Nothing here touches the real
 /// `Run` key, and teardown removes the whole tree.
@@ -156,6 +159,75 @@ void main() {
       expect(result.exitCode, 0, reason: 'reg add should have succeeded');
 
       expect(_registry.readString(_location, 'dword'), isNull);
+    });
+
+    test('writes binary a different reader can see', () {
+      _registry.writeBinary(
+        _location,
+        'bin',
+        Uint8List.fromList([0x02, 0x00, 0x00, 0x00]),
+      );
+
+      final probe = Process.runSync('reg', [
+        'query',
+        r'HKCU\' + _scratchPath,
+        '/v',
+        'bin',
+      ]);
+      expect(probe.exitCode, 0);
+      expect(probe.stdout as String, contains('REG_BINARY'));
+      expect(probe.stdout as String, contains('02000000'));
+    });
+
+    test('round-trips binary bytes', () {
+      final bytes = realDisabledApproval();
+      _registry.writeBinary(_location, 'twelve', bytes);
+
+      expect(_registry.readBinary(_location, 'twelve'), bytes);
+    });
+
+    // The returned bytes must be a copy: `asTypedList` is a view into arena
+    // memory that is freed when the read returns, so a view would hand the
+    // caller freed memory. Reading twice and mutating the first result proves
+    // the second is unaffected.
+    test('returns binary bytes the caller owns', () {
+      _registry.writeBinary(_location, 'owned', Uint8List.fromList([1, 2, 3]));
+
+      final first = _registry.readBinary(_location, 'owned')!..[0] = 0xFF;
+      final second = _registry.readBinary(_location, 'owned')!;
+
+      expect(first[0], 0xFF);
+      expect(second[0], 1);
+    });
+
+    test('round-trips binary larger than the fast-path buffer', () {
+      final big = Uint8List.fromList(List.generate(1024, (i) => i % 256));
+      _registry.writeBinary(_location, 'bigbin', big);
+
+      expect(_registry.readBinary(_location, 'bigbin'), big);
+    });
+
+    test('returns null for a binary value that does not exist', () {
+      expect(_registry.readBinary(_location, 'no-such-binary'), isNull);
+    });
+
+    test('returns null when the value is a string, not binary', () {
+      _registry.writeString(_location, 'astring', 'hello');
+
+      expect(_registry.readBinary(_location, 'astring'), isNull);
+    });
+
+    test('returns null when the value is binary, not a string', () {
+      _registry.writeBinary(_location, 'abinary', Uint8List.fromList([1]));
+
+      expect(_registry.readString(_location, 'abinary'), isNull);
+    });
+
+    test('deletes a binary value', () {
+      _registry.writeBinary(_location, 'delbin', Uint8List.fromList([1]));
+
+      expect(_registry.deleteValue(_location, 'delbin'), isTrue);
+      expect(_registry.readBinary(_location, 'delbin'), isNull);
     });
 
     test('surfaces an unexpected failure as a typed exception', () {

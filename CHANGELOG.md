@@ -10,4 +10,7 @@ Unreleased.
 - `disable()` removes only registrations this package wrote; a value it does not
   recognise is left in place, because the `Run` key is a namespace shared with
   every other application on the machine.
+- `isEnabled()` honours the user's Task Manager "Startup apps" toggle, which
+  Windows stores in a separate key from the registration itself. `enable()`
+  clears that veto.
 - macOS is not implemented yet and is served by the unsupported backend.

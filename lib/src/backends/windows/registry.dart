@@ -1,4 +1,5 @@
 import 'dart:ffi';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
@@ -62,7 +63,68 @@ final class WindowsRegistry {
   /// throwing. Both callers treat `null` as "not ours", which is the safe
   /// answer: a name collision with a non-string value must not turn `disable()`
   /// into a crash. `win32_registry` behaves the same way.
-  String? readString(RegistryLocation location, String name) {
+  String? readString(RegistryLocation location, String name) => _read(
+    location,
+    name,
+    _rrfRtRegSz | _rrfRtRegExpandSz | _rrfNoexpand,
+    // RegGetValueW guarantees a null terminator for string types, which
+    // RegQueryValueExW does not — a value another program wrote without one
+    // would otherwise be read past its end.
+    (data, _) => data.cast<Utf16>().toDartString(),
+  );
+
+  /// Returns the binary value named [name], or `null` when there is no binary
+  /// value there to read.
+  ///
+  /// As with [readString], a value of some other type reads as `null` rather
+  /// than throwing.
+  Uint8List? readBinary(RegistryLocation location, String name) => _read(
+    location,
+    name,
+    _rrfRtRegBinary,
+    // `asTypedList` is a *view* into the arena's memory, which is freed when
+    // this scope exits. Returning it would hand the caller freed memory, so
+    // the bytes are copied out.
+    (data, lengthInBytes) =>
+        Uint8List.fromList(data.asTypedList(lengthInBytes)),
+  );
+
+  /// Writes [value] as a `REG_SZ` under [name], creating the key if needed.
+  void writeString(RegistryLocation location, String name, String value) {
+    _write(
+      location,
+      name,
+      _regSz,
+      // Two bytes per UTF-16 code unit, plus two for the terminator.
+      // `String.length` is already in code units, so surrogate pairs are
+      // counted correctly without any extra work.
+      (arena) => (
+        value.toNativeUtf16(allocator: arena).cast<Uint8>(),
+        value.length * 2 + 2,
+      ),
+    );
+  }
+
+  /// Writes [value] as a `REG_BINARY` under [name], creating the key if needed.
+  void writeBinary(RegistryLocation location, String name, Uint8List value) {
+    _write(location, name, _regBinary, (arena) {
+      final data = arena<Uint8>(value.length);
+      data.asTypedList(value.length).setAll(0, value);
+      return (data, value.length);
+    });
+  }
+
+  /// Reads a value of the types selected by [flags] and converts it.
+  ///
+  /// Shared by [readString] and [readBinary] so the size negotiation exists
+  /// once: it is on this package's second sacred path, and two copies of it
+  /// would be two places for the arithmetic to drift.
+  T? _read<T extends Object>(
+    RegistryLocation location,
+    String name,
+    int flags,
+    T Function(Pointer<Uint8> data, int lengthInBytes) convert,
+  ) {
     return using((arena) {
       final subKey = location.path.toNativeUtf16(allocator: arena);
       final valueName = name.toNativeUtf16(allocator: arena);
@@ -81,23 +143,17 @@ final class WindowsRegistry {
           Pointer.fromAddress(hkeyCurrentUser),
           subKey,
           valueName,
-          _rrfRtRegSz | _rrfRtRegExpandSz | _rrfNoexpand,
+          flags,
           nullptr,
           buffer.cast(),
           size,
         );
 
-        if (status == _errorSuccess) {
-          // RegGetValueW guarantees a null terminator for string types, which
-          // RegQueryValueExW does not — a value another program wrote without
-          // one would otherwise be read past its end.
-          return buffer.cast<Utf16>().toDartString();
-        }
+        if (status == _errorSuccess) return convert(buffer, size.value);
         if (status == _errorFileNotFound) return null;
         if (status == _errorUnsupportedType) return null;
-        if (status != _errorMoreData) {
-          _fail('RegGetValueW', status);
-        }
+        if (status != _errorMoreData) _fail('RegGetValueW', status);
+
         capacity = size.value;
       }
 
@@ -108,23 +164,22 @@ final class WindowsRegistry {
     });
   }
 
-  /// Writes [value] as a `REG_SZ` under [name], creating the key if needed.
-  void writeString(RegistryLocation location, String name, String value) {
+  void _write(
+    RegistryLocation location,
+    String name,
+    int type,
+    (Pointer<Uint8>, int) Function(Arena arena) marshal,
+  ) {
     using((arena) {
       final handle = _openKey(arena, location, create: true);
       try {
-        final data = value.toNativeUtf16(allocator: arena);
-        // Two bytes per UTF-16 code unit, plus two for the terminator.
-        // `String.length` is already in code units, so surrogate pairs are
-        // counted correctly without any extra work.
-        final lengthInBytes = value.length * 2 + 2;
-
+        final (data, lengthInBytes) = marshal(arena);
         final status = _regSetValueExW(
           handle,
           name.toNativeUtf16(allocator: arena),
           0,
-          _regSz,
-          data.cast(),
+          type,
+          data,
           lengthInBytes,
         );
         if (status != _errorSuccess) _fail('RegSetValueExW', status);
@@ -219,11 +274,13 @@ const int _errorMoreData = 234;
 const int _errorUnsupportedType = 1630;
 
 const int _regSz = 1;
+const int _regBinary = 3;
 const int _regOptionNonVolatile = 0;
 const int _keyAllAccess = 0xF003F;
 
 const int _rrfRtRegSz = 0x00000002;
 const int _rrfRtRegExpandSz = 0x00000004;
+const int _rrfRtRegBinary = 0x00000008;
 const int _rrfNoexpand = 0x10000000;
 
 // Lazily initialised, as every top-level `final` in Dart is. That is what lets

@@ -40,6 +40,7 @@ veto**, and it is never the store you just wrote:
 | You wrote | The user's veto lives in |
 |---|---|
 | `Run` key value | `StartupApproved\Run` (12-byte value, **first byte parity**) |
+| a Startup-folder shortcut | `StartupApproved\StartupFolder` |
 | a scheduled task | the task's own enabled/disabled flag |
 | a LaunchAgent plist | launchd's disable overrides, outside the plist |
 
@@ -65,6 +66,7 @@ blind spot does not exist here. The real blind spot is per-runner (Step 7).
 | `lib/src/exceptions.dart` | sealed `AutostartException` hierarchy. Sealed on purpose: adding a failure mode makes the analyzer point at every exhaustive switch |
 | `lib/src/backends/` | one backend per platform. `unsupported_backend.dart` throws from all three operations rather than returning a quiet `false` |
 | `lib/src/backends/windows/run_command_line.dart` | pure encode/decode of the registry `Run` value. The **canonical form** (path always quoted) is what lets `disable()` tell our entries from a third party's |
+| `lib/src/backends/windows/startup_approval.dart` | pure encode/decode of the `StartupApproved\Run` byte format — the store holding the **user's** veto, as opposed to the registration |
 | `lib/src/backends/windows/registry.dart` | hand-written `advapi32` bindings and `RegistryLocation` — the backend's **only** seam. No interface over it and no fake of it: the marshalling *is* the dangerous part |
 | `lib/src/backends/windows/windows_run_key_backend.dart` | the `Run` key backend |
 | `example/` | the **only in-repo consumer seam** — reaches the package through the public API only. No separate `pubspec.yaml`, so `dart analyze` covers it but `dart test` does **not** run it (see Step 7) |
@@ -91,6 +93,15 @@ Add to this list when a pass finds another.
 - **`RegQueryValueExW` does not guarantee a null terminator** on string values;
   `RegGetValueW` does. A value another program wrote without one is a read past
   the end. Read with `RegGetValueW`.
+- **`StartupApproved` has a sibling key, `StartupApproved\StartupFolder`** —
+  the veto store for the Startup-*folder* `.lnk` mechanism, confirmed present on
+  a real machine. Not touched by the `Run` backend, but the mechanism work will
+  meet it.
+- **`Policies\Explorer\DisableCurrentUserRun` = 1 makes Windows ignore the whole
+  HKCU `Run` key.** A *third* store where `isEnabled()` can report true and
+  nothing launches. Absent on the machine probed, and not read by this package
+  or by `launch_at_startup` — repo and reference agree, so it is recorded as a
+  known limitation rather than handled.
 - The `Run` key is a **shared namespace keyed by value name**. Deleting the wrong
   name deletes *another application's* autostart, unrecoverably. Same for the
   Task Scheduler folder.
