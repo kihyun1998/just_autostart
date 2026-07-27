@@ -459,3 +459,105 @@ text costs nothing and removes the ambiguity.
 **Consequence:** on the sacred paths, a test is only credited once a mutation of
 the line it claims to cover turns it red. The comment on that test now says what
 it does *not* pin, so the next reader does not re-inherit the belief.
+
+## #17 — the third store, in a list I had already read — Step 5
+
+**Rule it proves:** "existence is not enablement" is not a fact about *one*
+second store. It is a shape, and the count is whatever the OS decided.
+
+`CLAUDE.md` names the hazard, `theflow.md` lists it per surface, and this ticket
+was written around it: `isEnabled()` reads the task's `Enabled` flag as well as
+the registration, exactly as the `Run` key backend reads `StartupApproved`
+alongside its value. Both the ticket and I treated that as the whole of it.
+
+The refuting lens planted three tasks and asked what `isEnabled()` said:
+
+| planted task | reported |
+| --- | --- |
+| logon trigger with `<Enabled>false</Enabled>`, task enabled | **`true`** |
+| no `<Triggers>` at all | **`true`** |
+| only a `<TimeTrigger>` dated 2099 | **`true`** |
+
+A scheduled task's **trigger** carries its own enabled flag, and the Task
+Scheduler UI disables a trigger through a different command from the one that
+disables a task. Every row above is a state a user reaches by hand, in which the
+program can never start and this package said it was on.
+
+The list was right and I read it as a checklist of *stores already known*
+instead of as a shape to go looking for again on a new surface.
+
+**Consequence:** `RegisteredTask.startsAtLogon` reads the trigger collection,
+and `isEnabled()` now has four conditions rather than three. The hidden-state
+list gained the trigger flag — and on the next surface, the question to ask is
+"how many stores does *this* one have", not "does it have the one I know about".
+
+## #18 — the default that kills a daemon on day three — Step 1
+
+**Rule it proves:** enumerate the hidden state by *reading it back*, not by
+reading what gets written.
+
+A fresh `ITaskService::NewTask` definition already carries
+`ExecutionTimeLimit = PT72H`, and `AllowHardTerminate = true` beside it. Task
+Scheduler stops a task that has been running for three days, and kills rather
+than asks. For a **daemon** — the thing this package exists to start — that is a
+defect that takes three days to appear and looks like a crash when it does.
+
+It is invisible in the artefact everyone reads. The XML Task Scheduler exports
+for such a task contains no `<ExecutionTimeLimit>` element at all; only
+`ITaskSettings::get_ExecutionTimeLimit` reports it. The same probe found
+`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` both true — an
+unplugged laptop never starts the program, and unplugging stops it — neither of
+which appears in the XML either.
+
+The probe was fifteen lines and ran before any of the ticket was written.
+
+**Consequence:** `_setSettings` overrides all four. And the general form, now in
+the hidden-state list: **an empty-looking `<Settings>` is not an absence.** For
+any OS surface with defaults, read the defaults back from the API rather than
+inferring them from what the serialised form shows.
+
+## #19 — the assertion that could not see the field it was about — Step 5
+
+**Rule it proves:** an unanchored `contains` on a document is not an assertion
+about the part of it you meant.
+
+`IPrincipal::put_UserId` is written on the FFI sacred path, where a wrong slot
+index calls a real function through a valid pointer. The test asserted
+`expect(xml, contains('<UserId>${currentUserSid()}</UserId>'))`.
+
+Deleting the entire `put_UserId` call left all 304 tests green. Two independent
+reasons, either of which was enough:
+
+1. the task's XML carries `<UserId>` in **two** places — the principal and the
+   logon trigger — and the unanchored match was satisfied by the trigger;
+2. Task Scheduler defaults the principal's `UserId` to the registering user
+   anyway, so even an anchored match could not distinguish *written* from
+   *defaulted*.
+
+The mutation matrix over all 31 vtable indices killed 30. This was the survivor.
+
+**Consequence:** the assertion is anchored inside `<Principal>`, and the general
+rule for this repo: when the proof is a document, match **within the element**
+the code is responsible for. A whole-document `contains` proves the document
+mentions something, which is rarely the claim.
+
+## #20 — refusing one impossible combination and silently dropping the other — Step 6
+
+**Rule it proves:** a "we refuse what we cannot honour" rule is a rule about the
+*set*, and the member you leave out is the one that hurts.
+
+`WindowsAutostartOptions` threw for `startupDelay` under the `Run` key, with the
+reason written into the code: silently dropping the value would be worse than
+refusing it. In the same class, `hideWindow: true` under the `Run` key was
+accepted and dropped — and that is the **more** consequential of the two. The
+caller is told autostart is configured and gets a black console window at every
+login, which is the entire defect the other mechanism exists to fix.
+
+It could not be refused as written, because `hideWindow` defaulted to `true` and
+refusing the default would have refused every ordinary caller.
+
+**Consequence:** `hideWindow` is `bool?`, defaulting to `null` — "whatever the
+mechanism can do" — so an *explicit* `true` under the `Run` key is refused on the
+same rule that already governed the delay. When a validation rule is written,
+enumerate the whole set it claims to cover before the shape of one field decides
+which members get enforced.

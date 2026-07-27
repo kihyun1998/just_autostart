@@ -13,24 +13,66 @@ to build against; macOS is next.
 | Platform | Mechanism | State |
 | -------- | --------- | ----- |
 | Windows | Registry `Run` key | **Works** |
-| Windows | Task Scheduler (hidden / delayed start) | Not implemented yet |
+| Windows | Task Scheduler (hidden window, delayed start) | **Works** |
 | macOS | launchd user agent | Not implemented yet |
 | Everything else | — | Raises `UnsupportedPlatformException` |
 
-> **Windows console window.** A `dart compile exe` output is a console-subsystem
-> executable, and the subsystem is fixed at compile time — so an entry
-> registered through the `Run` key shows a console window at every login and no
-> runtime API can suppress it. The Task Scheduler mechanism exists to solve
-> that, and is not built yet.
+## Choosing a Windows mechanism
+
+**Only Task Scheduler can start your program without a console window.** A
+`dart compile exe` output is a console-subsystem executable and the subsystem is
+fixed at compile time, so whether a window appears is decided by the process
+that launches you — never by anything your program does at runtime.
+
+| | Registry `Run` key | Task Scheduler |
+| --- | --- | --- |
+| Console window at login | **Always visible** | **Hidden**, or visible on request |
+| Delayed start | no | yes |
+| Where the user sees it | Task Manager → Startup apps | Task Scheduler |
+| Scope | per user (`HKCU`) | machine-wide task tree |
+| Needs elevation | no | no |
+
+There is **no automatic fallback** between them: they trade off differently and
+the choice is yours.
+
+```dart
+final autostart = Autostart.forCurrentPlatform(
+  config,
+  windows: const WindowsAutostartOptions(
+    mechanism: WindowsAutostartMechanism.taskScheduler,
+    // Optional: wait before starting, so you do not compete with the rest of
+    // the login sequence. Resolution is one second.
+    startupDelay: Duration(seconds: 30),
+  ),
+);
+```
+
+The default is the `Run` key — simpler, per-user, and visible to the user where
+they expect it. Switch to Task Scheduler when the console window matters.
+
+A combination that cannot be honoured is **refused, not ignored**: asking for
+`hideWindow: true` or a `startupDelay` under the `Run` key throws
+`ArgumentError` rather than silently registering something else.
+
+> **Two users, one machine.** The `Run` key is per-user and isolates them for
+> free. The Task Scheduler tree is machine-wide, so two users of the same
+> application collide on the same task name — the second registration fails with
+> access denied rather than overwriting the first.
 
 ### The user can override you, and `isEnabled()` says so
 
-Windows records a user switching an entry off in Task Manager's "Startup apps"
-tab in a **second** registry key, separate from the one an application writes.
-`isEnabled()` reads both, so it reports `false` for an entry the user has
-disabled — your toggle will not contradict what Windows is showing them.
+On both mechanisms Windows keeps the user's own decision **somewhere other than
+the registration**, and `isEnabled()` reads every one of those stores — so it
+reports `false` for something the user has switched off, and your toggle will
+not contradict what Windows is showing them.
 
-`enable()` **clears** that veto, matching `launch_at_startup`. Call it in
+- **`Run` key** — a second registry key records a user switching the entry off
+  in Task Manager's "Startup apps" tab.
+- **Task Scheduler** — the task has an enabled flag, *and* its trigger has a
+  separate one. Disabling either from the Task Scheduler UI stops the program
+  starting while leaving the registration untouched.
+
+`enable()` **clears** that veto on both, matching `launch_at_startup`. Call it in
 response to a user action, not on every launch.
 
 ## Usage
@@ -68,8 +110,7 @@ never turn on.
 
 ## Documentation
 
-This README grows as the backends land — including the Windows console-window
-behaviour and the macOS sandboxing limitation, both of which affect which
-mechanism you should choose.
+This README grows as the backends land — the macOS sandboxing limitation is
+still to come, and it affects which mechanism you should choose there.
 
 Issues and progress: <https://github.com/kihyun1998/just_autostart/issues>

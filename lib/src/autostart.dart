@@ -5,6 +5,8 @@ import 'autostart_config.dart';
 import 'autostart_platform.dart';
 import 'backends/unsupported_backend.dart';
 import 'backends/windows/windows_run_key_backend.dart';
+import 'backends/windows/windows_task_scheduler_backend.dart';
+import 'windows_options.dart';
 
 /// Registers a program to launch when the user logs in.
 ///
@@ -30,11 +32,21 @@ class Autostart {
   ///
   /// Useful for tests, and for a caller who has constructed a platform backend
   /// with options the cross-platform surface does not expose.
-  const Autostart.withBackend(this._backend);
+  const Autostart.withBackend(this.backend);
 
   /// Builds the instance for the platform this program is running on.
-  factory Autostart.forCurrentPlatform(AutostartConfig config) =>
-      Autostart.forOperatingSystem(config, Platform.operatingSystem);
+  ///
+  /// [windows] selects between the two Windows mechanisms and configures the
+  /// one chosen. It is read only on Windows; passing it elsewhere is harmless
+  /// and does nothing.
+  factory Autostart.forCurrentPlatform(
+    AutostartConfig config, {
+    WindowsAutostartOptions windows = const WindowsAutostartOptions(),
+  }) => Autostart.forOperatingSystem(
+    config,
+    Platform.operatingSystem,
+    windows: windows,
+  );
 
   /// Builds the instance for a named [operatingSystem].
   ///
@@ -43,31 +55,60 @@ class Autostart {
   /// [UnsupportedPlatformException], rather than a failure at construction —
   /// so a caller can build one unconditionally and handle the failure at the
   /// point where autostart is actually requested.
+  ///
+  /// A [windows] combination that cannot be honoured — a startup delay asked of
+  /// the registry `Run` key — throws [ArgumentError] here, because it is a
+  /// mistake in the calling code rather than a condition of the machine, and
+  /// because failing at construction is better than dropping the value
+  /// silently.
   factory Autostart.forOperatingSystem(
     AutostartConfig config,
-    String operatingSystem,
-  ) => Autostart.withBackend(_backendFor(config, operatingSystem));
+    String operatingSystem, {
+    WindowsAutostartOptions windows = const WindowsAutostartOptions(),
+  }) => Autostart.withBackend(_backendFor(config, operatingSystem, windows));
 
-  final AutostartBackend _backend;
+  /// The platform backend this instance delegates to.
+  ///
+  /// Exposed for symmetry with [Autostart.withBackend], and because "which
+  /// mechanism did the selector actually choose" is a question a caller can
+  /// otherwise only answer by watching the machine change.
+  final AutostartBackend backend;
 
   /// Delegates to [AutostartBackend.enable].
-  Future<void> enable() => _backend.enable();
+  Future<void> enable() => backend.enable();
 
   /// Delegates to [AutostartBackend.disable].
-  Future<void> disable() => _backend.disable();
+  Future<void> disable() => backend.disable();
 
   /// Delegates to [AutostartBackend.isEnabled].
-  Future<bool> isEnabled() => _backend.isEnabled();
+  Future<bool> isEnabled() => backend.isEnabled();
 }
 
-AutostartBackend _backendFor(AutostartConfig config, String operatingSystem) {
+AutostartBackend _backendFor(
+  AutostartConfig config,
+  String operatingSystem,
+  WindowsAutostartOptions windows,
+) {
   return switch (resolveAutostartPlatform(operatingSystem)) {
-    // The registry `Run` key is the only Windows mechanism so far. Task
-    // Scheduler, and the choice between the two, arrive with the mechanism
-    // selector.
-    AutostartPlatform.windows => WindowsRunKeyBackend(config: config),
+    AutostartPlatform.windows => _windowsBackend(config, windows),
     // The macOS backend is not built yet.
     AutostartPlatform.macos || AutostartPlatform.unsupported =>
       UnsupportedPlatformBackend(operatingSystem),
+  };
+}
+
+AutostartBackend _windowsBackend(
+  AutostartConfig config,
+  WindowsAutostartOptions windows,
+) {
+  windows.validate();
+
+  return switch (windows.mechanism) {
+    WindowsAutostartMechanism.runKey => WindowsRunKeyBackend(config: config),
+    WindowsAutostartMechanism.taskScheduler => WindowsTaskSchedulerBackend(
+      config: config,
+      hideWindow: windows.hideWindowOrDefault,
+      delay: windows.startupDelay,
+    ),
   };
 }

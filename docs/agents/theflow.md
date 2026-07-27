@@ -126,6 +126,56 @@ Add to this list when a pass finds another.
 - **A logon trigger requires elevation through `schtasks /sc ONLOGON`** but not
   through the XML form with an explicit `<UserId>`. Task creation itself is
   unprivileged; the logon trigger specifically is not.
+- **A new task definition already carries `ExecutionTimeLimit = PT72H`, and the
+  exported XML does not mention it.** Measured on a fresh `ITaskService::NewTask`
+  (#12). Task Scheduler stops a task that has run for three days, and
+  `AllowHardTerminate` is `TRUE` by default, so it is killed rather than asked —
+  which for a **daemon**, the thing this package exists to start, is a bug that
+  takes three days to appear. `PT0S` means no limit. Reading the registered
+  task's XML does not reveal this; only reading `ITaskSettings` does.
+- **`ITaskSettings` defaults measured on a fresh definition (#12):**
+  `DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` are both `TRUE`, so
+  an unplugged laptop never starts the tool and unplugging stops it;
+  `StartWhenAvailable` is `FALSE`, so a trigger missed while the machine was off
+  is not made up. All three are wrong for autostart and none appear in the XML
+  as written.
+- **`IPrincipal`'s defaults are already what this package wants** — `LogonType`
+  is `TASK_LOGON_INTERACTIVE_TOKEN` (3) and `RunLevel` is `TASK_RUNLEVEL_LUA`
+  (0), measured on a fresh definition (#12). The interface is needed only to set
+  an explicit `UserId`, not to fix a bad default.
+- **`VARIANT_BOOL` is `-1` for true, not `1`.** Every `ITaskSettings` boolean
+  crosses the FFI boundary as an `Int16` in that encoding, and the getters return
+  `-1`. A `1` is not the canonical true.
+- **A scheduled task's trigger has an `Enabled` flag of its own — a *third*
+  store.** The Task Scheduler UI can disable the **task** (the command on the
+  task) and it can disable a **trigger** (Properties → Triggers → Edit), and
+  neither touches the other. A task that is enabled but whose logon trigger is
+  disabled — or which has no trigger, or only a trigger of another type — is
+  registered, permitted, and will never start at login (#12). Reading
+  `IRegisteredTask::get_Enabled` alone reports it as on.
+- **Task names are case-*sensitive*; `Run` key value names are not.** Measured
+  (#12): a task registered as `MixedCase` is not found by `GetTask('mixedcase')`
+  — the call fails with `0x80070002`. Trailing spaces are preserved too. So an
+  application that changes the case of its own `appName` between releases orphans
+  the old task, which keeps launching, while `isEnabled()` reports `false`. The
+  same change is harmless on the `Run` key.
+- **A task name containing `\` is read as a folder path.** `createTask('Sub\Tool')`
+  silently creates a subfolder; `disable()` then removes the task and leaves the
+  folder, after which removing the package's own folder fails with
+  `ERROR_DIR_NOT_EMPTY`. `AutostartConfig` validates separators in `label`, not
+  in `appName`, so the Task Scheduler backend checks it.
+- **The task XML omits every setting left at its default**, so it cannot
+  distinguish "set to the default" from "never set" (#12). `RunLevel` is the
+  clearest case: writing `TASK_RUNLEVEL_LUA` explicitly produces XML with no
+  `<RunLevel>` element at all. An assertion on the XML is therefore only ever a
+  proof about **non**-default values.
+- **`ILogonTrigger::UserId` is normalised on write; `IPrincipal::UserId` is
+  not.** Give both a SID and the task's XML comes back with `DOMAIN\Name` in the
+  trigger and the SID in the principal (#12).
+- **Vtable slots do not transfer by analogy between sibling collections.**
+  `IActionCollection::Create` is slot 12; `ITriggerCollection::Create` is slot
+  **10**, because the trigger collection has no `XmlText` property pair (#12).
+  Two interfaces that read as the same shape are not the same vtable.
 - MSIX / packaged apps take an entirely different path. Out of scope here, but it
   is state that exists and a report from a packaged app is not a defect in this
   package.

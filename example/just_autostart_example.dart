@@ -28,11 +28,29 @@ Future<void> main() async {
     args: const ['--daemon'],
   );
 
-  final autostart = Autostart.forCurrentPlatform(config);
+  // The default mechanism on Windows is the registry `Run` key.
+  await report('Run key', Autostart.forCurrentPlatform(config));
 
+  // Task Scheduler is the opt-in, and the only mechanism that can start a
+  // `dart compile exe` program without a console window appearing at login. The
+  // choice is the calling application's — there is no automatic fallback.
+  await report(
+    'Task Scheduler',
+    Autostart.forCurrentPlatform(
+      config,
+      windows: const WindowsAutostartOptions(
+        mechanism: WindowsAutostartMechanism.taskScheduler,
+        startupDelay: Duration(seconds: 30),
+      ),
+    ),
+  );
+}
+
+/// Prints what [autostart] currently reports, or why it cannot answer.
+Future<void> report(String label, Autostart autostart) async {
   try {
-    stdout.writeln('enabled: ${await autostart.isEnabled()}');
+    stdout.writeln('$label — enabled: ${await autostart.isEnabled()}');
   } on UnsupportedPlatformException catch (error) {
-    stdout.writeln(error.message);
+    stdout.writeln('$label — ${error.message}');
   }
 }

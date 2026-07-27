@@ -377,6 +377,18 @@ Pointer<Utf16> allocateBstr(Arena arena, String value) {
   return arena.using(bstr, _sysFreeString);
 }
 
+/// Frees a `BSTR` that came **from** a COM call rather than from [allocateBstr].
+///
+/// A property getter returns a string the callee allocated and the caller owns;
+/// there is no arena holding it, so it is released explicitly. Freeing it with
+/// anything but `SysFreeString` corrupts the OLE automation heap, and not
+/// freeing it leaks — which is why the read path copies the text out and calls
+/// this immediately rather than passing the pointer around.
+void freeBstr(Pointer<Utf16> bstr) {
+  if (bstr == nullptr) return;
+  _sysFreeString(bstr);
+}
+
 /// Opens a Windows system DLL that is registered as a **KnownDLL**.
 ///
 /// Loading a DLL by bare name normally follows the search order, which begins

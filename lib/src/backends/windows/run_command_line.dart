@@ -45,13 +45,32 @@ String encodeRunCommandLine(String executablePath, List<String> args) {
   final buffer = StringBuffer('"')
     ..write(executablePath)
     ..write('"');
-  for (final arg in args) {
+  if (args.isNotEmpty) {
     buffer
       ..write(' ')
-      ..write(_quoteArgument(arg));
+      ..write(encodeArguments(args));
   }
   return buffer.toString();
 }
+
+/// Builds the argument tail on its own, without a leading executable.
+///
+/// A scheduled task keeps the executable and its arguments in **two** fields —
+/// `IExecAction`'s `Path` and `Arguments` — where the `Run` key has one string.
+/// The quoting rules are the same either way, because the same
+/// `CommandLineToArgvW` parses what the task launches, so this shares
+/// [encodeRunCommandLine]'s implementation rather than restating it. Two copies
+/// of these rules is how the two mechanisms would come to disagree about what a
+/// caller's arguments mean.
+String encodeArguments(List<String> args) => args.map(_quoteArgument).join(' ');
+
+/// Splits an argument tail back into the values it was built from.
+///
+/// Returns `null` on an unterminated quote, which is the only input Windows
+/// itself would refuse. Unlike [decodeRunCommandLine] there is no canonical
+/// form to recognise here: an empty tail is a real, valid answer — a program
+/// registered with no arguments — not a failure to parse.
+List<String>? decodeArguments(String value) => _parseArguments(value);
 
 /// Splits a registry `Run` value back into an executable path and arguments.
 ///

@@ -2,6 +2,8 @@ import 'package:just_autostart/src/backends/windows/run_command_line.dart';
 import 'package:test/test.dart';
 
 void main() {
+  _argumentTailTests();
+
   group('encodeRunCommandLine', () {
     test('quotes the executable path even when it has no spaces', () {
       expect(encodeRunCommandLine(r'C:\app.exe', const []), r'"C:\app.exe"');
@@ -155,5 +157,67 @@ void main() {
 
       expect(a, isNot(b));
     });
+  });
+}
+
+// The argument tail on its own, which is the form `IExecAction.Arguments`
+// takes. It shares `encodeRunCommandLine`'s quoting, and these pin that it
+// really is shared rather than merely similar — two mechanisms disagreeing
+// about what a caller's arguments mean would be invisible until a user's path
+// contained a space.
+void _argumentTailTests() {
+  group('encodeArguments', () {
+    test('is empty for no arguments', () {
+      expect(encodeArguments(const []), '');
+    });
+
+    test('leaves ordinary arguments alone', () {
+      expect(encodeArguments(const ['--daemon', '-v']), '--daemon -v');
+    });
+
+    test('quotes an argument containing a space', () {
+      expect(
+        encodeArguments(const [r'--out=C:\My Docs']),
+        r'"--out=C:\My Docs"',
+      );
+    });
+
+    test('agrees with the tail encodeRunCommandLine produces', () {
+      const args = ['--daemon', r'--out=C:\My Docs', 'plain'];
+
+      expect(
+        encodeRunCommandLine(r'C:\app.exe', args),
+        '${r'"C:\app.exe"'} ${encodeArguments(args)}',
+      );
+    });
+
+    test('produces no trailing space when there are no arguments', () {
+      expect(encodeRunCommandLine(r'C:\app.exe', const []), r'"C:\app.exe"');
+    });
+  });
+
+  group('decodeArguments', () {
+    test('reads an empty tail as no arguments', () {
+      expect(decodeArguments(''), isEmpty);
+    });
+
+    test('refuses an unterminated quote', () {
+      expect(decodeArguments('"unterminated'), isNull);
+    });
+
+    for (final args in const [
+      <String>[],
+      ['--daemon'],
+      ['--daemon', '-v'],
+      [r'--out=C:\My Docs'],
+      ['--say="hello"'],
+      [r'--path=C:\dir\'],
+      ['with space', 'and"quote'],
+      [''],
+    ]) {
+      test('round-trips $args', () {
+        expect(decodeArguments(encodeArguments(args)), args);
+      });
+    }
   });
 }
