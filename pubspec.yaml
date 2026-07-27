@@ -1,14 +1,14 @@
 name: just_autostart
-description: A starting point for Dart libraries or applications.
-version: 1.0.0
-# repository: https://github.com/my_org/my_repo
+description: >-
+  Launch a Dart CLI or daemon at login on Windows and macOS. Pure Dart, with no
+  Flutter dependency and no native sources to compile.
+version: 0.1.0
+homepage: https://github.com/kihyun1998/just_autostart
+repository: https://github.com/kihyun1998/just_autostart
+issue_tracker: https://github.com/kihyun1998/just_autostart/issues
 
 environment:
   sdk: ^3.11.5
-
-# Add regular dependencies here.
-dependencies:
-  # path: ^1.9.0
 
 dev_dependencies:
   lints: ^6.0.0
