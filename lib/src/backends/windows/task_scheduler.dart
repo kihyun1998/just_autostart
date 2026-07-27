@@ -118,6 +118,7 @@ final class RegisteredTask {
     required this.args,
     required this.enabled,
     required this.startsAtLogon,
+    required this.runsAsCurrentUser,
   });
 
   /// The program its first action runs, or `null` when it has no readable
@@ -150,10 +151,20 @@ final class RegisteredTask {
   /// the `Run` key's approval value exists to prevent, one level deeper.
   final bool startsAtLogon;
 
+  /// Whether the task runs as the user this process belongs to.
+  ///
+  /// **The `Run` key needs no equivalent and that is the point.** It lives under
+  /// `HKEY_CURRENT_USER`, so one user physically cannot see another's entries.
+  /// The Task Scheduler tree is machine-wide, so two users of the same
+  /// *installation* have the same executable path — and a guard built on the
+  /// path alone would identify another user's task as this application's own.
+  final bool runsAsCurrentUser;
+
   @override
   String toString() =>
       'RegisteredTask(executablePath: $executablePath, args: $args, '
-      'enabled: $enabled, startsAtLogon: $startsAtLogon)';
+      'enabled: $enabled, startsAtLogon: $startsAtLogon, '
+      'runsAsCurrentUser: $runsAsCurrentUser)';
 }
 
 /// Formats [duration] as the ISO 8601 duration Task Scheduler stores.
@@ -774,6 +785,7 @@ final class WindowsTaskScheduler {
       'IRegisteredTask::get_Definition',
     );
     final startsAtLogon = _hasEnabledLogonTrigger(arena, definition);
+    final runsAsCurrentUser = _runsAsCurrentUser(arena, definition);
     final actions = _property(
       arena,
       definition,
@@ -786,6 +798,7 @@ final class WindowsTaskScheduler {
       args: null,
       enabled: enabled,
       startsAtLogon: startsAtLogon,
+      runsAsCurrentUser: runsAsCurrentUser,
     );
 
     // This package writes **exactly one** action, so a task carrying any other
@@ -843,7 +856,36 @@ final class WindowsTaskScheduler {
       args: arguments == null ? const [] : decodeArguments(arguments),
       enabled: enabled,
       startsAtLogon: startsAtLogon,
+      runsAsCurrentUser: runsAsCurrentUser,
     );
+  }
+
+  /// Whether [definition]'s principal names the user this process runs as.
+  ///
+  /// **The form that comes back is not the form that went in.** A SID is
+  /// written and the task's XML stores a SID, but `get_UserId` resolves it to
+  /// an account name on the way out — so this cannot be a string comparison
+  /// against the SID, and [isCurrentUser] resolves whatever arrives back to one.
+  ///
+  /// A principal with no `UserId` resolves to whoever registered the task, and
+  /// there is no way from here to learn who that was, so it reads as *not*
+  /// ours: on a deletion path the safe direction is to leave something alone.
+  bool _runsAsCurrentUser(Arena arena, ComPtr definition) {
+    final principal = _property(
+      arena,
+      definition,
+      _definitionGetPrincipal,
+      'ITaskDefinition::get_Principal',
+    );
+    final userId = _getBstr(
+      arena,
+      principal,
+      _principalGetUserId,
+      'IPrincipal::get_UserId',
+    );
+    if (userId == null || userId.isEmpty) return false;
+
+    return isCurrentUser(userId);
   }
 
   /// Whether [definition] carries a logon trigger that is itself switched on.
@@ -1098,6 +1140,7 @@ const int _triggerGetEnabled = 18;
 const int _logonTriggerPutDelay = 21;
 const int _logonTriggerPutUserId = 23;
 
+const int _principalGetUserId = 11;
 const int _principalPutUserId = 12;
 const int _principalPutLogonType = 14;
 const int _principalPutRunLevel = 18;

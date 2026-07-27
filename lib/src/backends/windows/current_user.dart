@@ -70,6 +70,77 @@ String currentUserSid() {
   });
 }
 
+/// Whether [accountOrSid] names the user this process is running as.
+///
+/// Needed because **Windows hands the same identity back in more than one
+/// form.** A scheduled task's principal is *stored* as the SID it was given —
+/// the XML shows one — but `IPrincipal::get_UserId` resolves it to an account
+/// name on the way out. So a comparison against [currentUserSid] never matches,
+/// and a comparison against a name would have to guess which of `Name`,
+/// `DOMAIN\Name` or `Name@domain` it was given.
+///
+/// Resolving whatever arrives back to a SID and comparing *those* removes the
+/// guess: a SID is what the account actually is.
+bool isCurrentUser(String accountOrSid) {
+  final mine = currentUserSid().toUpperCase();
+  if (accountOrSid.toUpperCase() == mine) return true;
+
+  final resolved = _sidForAccountName(accountOrSid);
+  return resolved != null && resolved.toUpperCase() == mine;
+}
+
+/// Resolves an account name to its SID, or `null` when it names nobody.
+///
+/// A name that cannot be resolved is not an error here. It means the account is
+/// gone, or belongs to a domain this machine cannot reach — in either case it is
+/// not this user, which is the only question being asked.
+String? _sidForAccountName(String name) {
+  return using((arena) {
+    final wide = name.toNativeUtf16(allocator: arena);
+    final sidSize = arena<Uint32>();
+    final domainSize = arena<Uint32>();
+    final use = arena<Int32>();
+
+    // The usual two calls: the first exists only to learn both sizes. A SID is
+    // variable-length and so is the domain name, so neither buffer has a size
+    // that is correct by construction.
+    _lookupAccountNameW(
+      nullptr,
+      wide,
+      nullptr,
+      sidSize,
+      nullptr,
+      domainSize,
+      use,
+    );
+    if (sidSize.value == 0) return null;
+
+    final sid = arena<Uint8>(sidSize.value);
+    final domain = arena<Uint16>(domainSize.value + 1);
+    if (_lookupAccountNameW(
+          nullptr,
+          wide,
+          sid.cast(),
+          sidSize,
+          domain.cast(),
+          domainSize,
+          use,
+        ) ==
+        0) {
+      return null;
+    }
+
+    final text = arena<Pointer<Utf16>>();
+    if (_convertSidToStringSidW(sid.cast(), text) == 0) return null;
+
+    try {
+      return text.value.toDartString();
+    } finally {
+      _localFree(text.value.cast());
+    }
+  });
+}
+
 Never _failLastError(String operation) {
   final code = _getLastError();
   throw AutostartOsException(
@@ -111,6 +182,28 @@ final _convertSidToStringSidW = _advapi32
       Int32 Function(Pointer<Void>, Pointer<Pointer<Utf16>>),
       int Function(Pointer<Void>, Pointer<Pointer<Utf16>>)
     >('ConvertSidToStringSidW');
+
+final _lookupAccountNameW = _advapi32
+    .lookupFunction<
+      Int32 Function(
+        Pointer<Utf16>,
+        Pointer<Utf16>,
+        Pointer<Void>,
+        Pointer<Uint32>,
+        Pointer<Utf16>,
+        Pointer<Uint32>,
+        Pointer<Int32>,
+      ),
+      int Function(
+        Pointer<Utf16>,
+        Pointer<Utf16>,
+        Pointer<Void>,
+        Pointer<Uint32>,
+        Pointer<Utf16>,
+        Pointer<Uint32>,
+        Pointer<Int32>,
+      )
+    >('LookupAccountNameW');
 
 final _closeHandle = _kernel32
     .lookupFunction<Int32 Function(IntPtr), int Function(int)>('CloseHandle');

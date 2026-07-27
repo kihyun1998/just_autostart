@@ -27,4 +27,17 @@ Unreleased.
 - Scheduled tasks are registered with the settings Windows would otherwise
   default to wrongly for a login daemon: no battery restrictions, and no
   three-day execution time limit.
+- Switching between the two Windows mechanisms no longer leaves the program
+  launching twice: `enable()` removes any registration the other mechanism
+  holds, and `disable()` clears both. Cleanup removes only registrations naming
+  the configured executable, so a third party's autostart under a colliding
+  name is left alone — as is one this package wrote at an earlier install path,
+  which it cannot tell apart from a stranger's.
+- `MechanismCleanupException` reports the case where the new registration
+  succeeded but the old one could not be removed. It is a separate type because
+  autostart *is* on, which is not what "enable failed" means.
+- A scheduled task is recognised as this package's own only when its principal
+  is the current user. The Task Scheduler tree is machine-wide where the `Run`
+  key is per-user, so two users of one installation would otherwise be
+  indistinguishable by path alone.
 - macOS is not implemented yet and is served by the unsupported backend.

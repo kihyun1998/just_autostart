@@ -4,6 +4,7 @@ import 'autostart_backend.dart';
 import 'autostart_config.dart';
 import 'autostart_platform.dart';
 import 'backends/unsupported_backend.dart';
+import 'backends/windows/windows_autostart_backend.dart';
 import 'backends/windows/windows_run_key_backend.dart';
 import 'backends/windows/windows_task_scheduler_backend.dart';
 import 'windows_options.dart';
@@ -103,12 +104,25 @@ AutostartBackend _windowsBackend(
 ) {
   windows.validate();
 
+  final runKey = WindowsRunKeyBackend(config: config);
+  final taskScheduler = WindowsTaskSchedulerBackend(
+    config: config,
+    hideWindow: windows.hideWindowOrDefault,
+    delay: windows.startupDelay,
+  );
+
+  // Both are built either way. Constructing one costs nothing — no registry is
+  // read and no COM apartment is opened until a method is called — and the
+  // backend needs the one it did *not* choose in order to clean up after an
+  // earlier version of the calling application that used it.
   return switch (windows.mechanism) {
-    WindowsAutostartMechanism.runKey => WindowsRunKeyBackend(config: config),
-    WindowsAutostartMechanism.taskScheduler => WindowsTaskSchedulerBackend(
-      config: config,
-      hideWindow: windows.hideWindowOrDefault,
-      delay: windows.startupDelay,
+    WindowsAutostartMechanism.runKey => WindowsAutostartBackend(
+      chosen: runKey,
+      other: taskScheduler,
+    ),
+    WindowsAutostartMechanism.taskScheduler => WindowsAutostartBackend(
+      chosen: taskScheduler,
+      other: runKey,
     ),
   };
 }

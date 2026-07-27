@@ -13,6 +13,11 @@ abstract interface class AutostartBackend {
   /// Removes the registration, if there is one.
   ///
   /// Idempotent: disabling something that was never enabled is not an error.
+  ///
+  /// Where a platform offers more than one mechanism — Windows does — this
+  /// clears **every** one of them, not only the one currently configured.
+  /// Anything else would let `disable()` report success while a registration
+  /// made by an earlier version kept launching the program.
   Future<void> disable();
 
   /// Whether the configured executable will actually launch at login.

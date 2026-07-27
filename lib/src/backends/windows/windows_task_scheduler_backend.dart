@@ -152,7 +152,18 @@ final class WindowsTaskSchedulerBackend implements AutostartBackend {
   /// Weaker than [isEnabled] on purpose: the arguments may have changed between
   /// releases, and a task this application owns is still its own to remove.
   bool _isOurs(RegisteredTask? task) {
-    final path = task?.executablePath;
+    if (task == null) return false;
+
+    // **Two terms, and the second is the one the `Run` key does not need.**
+    // `HKEY_CURRENT_USER` isolates users for free; the Task Scheduler tree is
+    // machine-wide, so two users of the same *installation* have byte-identical
+    // executable paths. A path-only guard would identify another user's task as
+    // this application's own — and this guard is also reached from `enable()`
+    // on the other mechanism, where the caller never asked for a deletion at
+    // all.
+    if (!task.runsAsCurrentUser) return false;
+
+    final path = task.executablePath;
     if (path == null) return false;
 
     // Windows paths are case-insensitive, so a task registered as

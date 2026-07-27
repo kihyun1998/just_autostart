@@ -1,3 +1,4 @@
+import 'package:just_autostart/src/backends/windows/windows_autostart_backend.dart';
 import 'package:just_autostart/src/backends/windows/windows_run_key_backend.dart';
 import 'package:just_autostart/src/backends/windows/windows_task_scheduler_backend.dart';
 import 'package:just_autostart/just_autostart.dart';
@@ -27,6 +28,13 @@ AutostartConfig _config() => AutostartConfig(
   label: 'com.example.mytool',
   executablePath: '/usr/local/bin/mytool',
 );
+
+/// The mechanism the selector actually picked.
+///
+/// On Windows the backend is always the composite that converges the two
+/// mechanisms, so the question "which mechanism did I get" is one level in.
+AutostartBackend chosenBackend(Autostart autostart) =>
+    (autostart.backend as WindowsAutostartBackend).chosen;
 
 void main() {
   _windowsMechanismTests();
@@ -177,7 +185,7 @@ void _windowsMechanismTests() {
     test('builds a Run key backend by default', () {
       final autostart = Autostart.forOperatingSystem(config, 'windows');
 
-      expect(autostart.backend, isA<WindowsRunKeyBackend>());
+      expect(chosenBackend(autostart), isA<WindowsRunKeyBackend>());
     });
 
     test('builds a Task Scheduler backend when asked', () {
@@ -189,7 +197,32 @@ void _windowsMechanismTests() {
         ),
       );
 
-      expect(autostart.backend, isA<WindowsTaskSchedulerBackend>());
+      expect(chosenBackend(autostart), isA<WindowsTaskSchedulerBackend>());
+    });
+
+    // The composite cleans up whichever mechanism it was **not** given, so the
+    // wiring is the whole of it. Pointing `other` at the same backend as
+    // `chosen` makes `enable()` register and then immediately unregister —
+    // autostart silently off, reported as success — and the integration tests
+    // cannot see it, because they assemble the composite themselves.
+    test('wires the mechanism it did not choose as the one to clean up', () {
+      final runKey =
+          Autostart.forOperatingSystem(config, 'windows').backend
+              as WindowsAutostartBackend;
+      expect(runKey.chosen, isA<WindowsRunKeyBackend>());
+      expect(runKey.other, isA<WindowsTaskSchedulerBackend>());
+
+      final tasks =
+          Autostart.forOperatingSystem(
+                config,
+                'windows',
+                windows: const WindowsAutostartOptions(
+                  mechanism: WindowsAutostartMechanism.taskScheduler,
+                ),
+              ).backend
+              as WindowsAutostartBackend;
+      expect(tasks.chosen, isA<WindowsTaskSchedulerBackend>());
+      expect(tasks.other, isA<WindowsRunKeyBackend>());
     });
 
     test('passes the window and delay settings to the backend', () {
@@ -203,7 +236,7 @@ void _windowsMechanismTests() {
         ),
       );
 
-      final backend = autostart.backend as WindowsTaskSchedulerBackend;
+      final backend = chosenBackend(autostart) as WindowsTaskSchedulerBackend;
       expect(backend.hideWindow, isFalse);
       expect(backend.delay, const Duration(seconds: 30));
     });
@@ -279,7 +312,7 @@ void _windowsRefusalTests() {
 
     test('accepts hideWindow: false under the Run key', () {
       expect(
-        build(const WindowsAutostartOptions(hideWindow: false)).backend,
+        chosenBackend(build(const WindowsAutostartOptions(hideWindow: false))),
         isA<WindowsRunKeyBackend>(),
       );
     });
@@ -288,18 +321,20 @@ void _windowsRefusalTests() {
     // ordinary caller who never thinks about it is not refused.
     test('accepts the default under the Run key', () {
       expect(
-        build(const WindowsAutostartOptions()).backend,
+        chosenBackend(build(const WindowsAutostartOptions())),
         isA<WindowsRunKeyBackend>(),
       );
     });
 
     test('hides the window by default under Task Scheduler', () {
       final backend =
-          build(
-                const WindowsAutostartOptions(
-                  mechanism: WindowsAutostartMechanism.taskScheduler,
+          chosenBackend(
+                build(
+                  const WindowsAutostartOptions(
+                    mechanism: WindowsAutostartMechanism.taskScheduler,
+                  ),
                 ),
-              ).backend
+              )
               as WindowsTaskSchedulerBackend;
 
       expect(backend.hideWindow, isTrue);
@@ -322,12 +357,14 @@ void _windowsRefusalTests() {
 
     test('accepts a delay of exactly one second', () {
       expect(
-        build(
-          const WindowsAutostartOptions(
-            mechanism: WindowsAutostartMechanism.taskScheduler,
-            startupDelay: Duration(seconds: 1),
+        chosenBackend(
+          build(
+            const WindowsAutostartOptions(
+              mechanism: WindowsAutostartMechanism.taskScheduler,
+              startupDelay: Duration(seconds: 1),
+            ),
           ),
-        ).backend,
+        ),
         isA<WindowsTaskSchedulerBackend>(),
       );
     });

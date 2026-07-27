@@ -70,6 +70,15 @@ String _probePath() {
   return path;
 }
 
+/// Whether a task folder exists, regardless of whether it holds any tasks.
+///
+/// **Not `schtasks /query /tn <folder>`**, which exits non-zero for a folder
+/// that is absent *and* for one that is merely empty — so an assertion built on
+/// it passes for the leftover it exists to catch. Task Scheduler stores folders
+/// as real directories under `System32\Tasks`.
+bool taskFolderExists(String path) =>
+    Directory('${r'C:\Windows\System32\Tasks'}$path').existsSync();
+
 void main() {
   setUpAll(() {
     _scratch = Directory.systemTemp.createTempSync('just_autostart_probe');
@@ -82,12 +91,8 @@ void main() {
       ..deleteFolder();
 
     expect(
-      Process.runSync('schtasks', [
-        '/query',
-        '/tn',
-        _scratchFolder.path,
-      ]).exitCode,
-      isNot(0),
+      taskFolderExists(_scratchFolder.path),
+      isFalse,
       reason: 'the scratch task folder should be gone',
     );
 

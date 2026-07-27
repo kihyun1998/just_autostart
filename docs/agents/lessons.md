@@ -561,3 +561,99 @@ mechanism can do" — so an *explicit* `true` under the `Run` key is refused on 
 same rule that already governed the delay. When a validation rule is written,
 enumerate the whole set it claims to cover before the shape of one field decides
 which members get enforced.
+
+## #21 — the same identity, handed back in a different form — Step 4
+
+**Rule it proves:** a round trip through an OS API is not a round trip through
+its serialised form. Verify the read, not only the write.
+
+`IPrincipal::put_UserId` is given the current user's SID, and the task's XML
+stores exactly that:
+
+```xml
+<Principal id="Author">
+  <UserId>S-1-5-21-3670707146-4230519492-3577509718-1001</UserId>
+```
+
+`IPrincipal::get_UserId` returns `User`. Task Scheduler resolves the SID to an
+account name on the way out — so an ownership guard comparing the read value
+against `currentUserSid()` can **never** match, and every task this package
+wrote stopped being recognised as its own.
+
+The XML was checked and looked right, which is exactly why this got as far as it
+did. #12 had already recorded the mirror image — a trigger's `UserId` normalised
+on *write* — and the lesson taken from it was about writes.
+
+**Consequence:** `isCurrentUser` resolves whatever arrives back to a SID with
+`LookupAccountNameW` and compares those, so `Name`, `DOMAIN\Name` and a SID all
+answer the same question. And the general rule: when a guard depends on a value
+that crosses an OS boundary in both directions, read it back through the *same
+API the guard uses*, not through whatever the OS exports for humans.
+
+## #22 — an assertion that cannot fail for the thing it names — Steps 4, 5
+
+**Rule it proves:** an absence check needs a reader that distinguishes *absent*
+from *empty*.
+
+Three test files asserted their scratch task folder was removed on teardown with
+
+```dart
+expect(Process.runSync('schtasks', ['/query', '/tn', folder]).exitCode, isNot(0));
+```
+
+`schtasks /query /tn` exits non-zero for a folder that is **absent** and for one
+that is merely **empty**. So the assertion passed for the leftover it existed to
+catch — and a real leftover from an earlier failing run sat on the machine
+undetected until an unrelated test tripped over it with `ERROR_DIR_NOT_EMPTY`.
+
+Task Scheduler stores folders as real directories under `System32\Tasks`, so
+`Directory(...).existsSync()` is a reader that can tell the two apart.
+
+**Consequence:** all three files use it. And the general form, which is the
+half worth keeping: **for a "this is gone" assertion, ask what the reader
+returns for the failure state you are trying to detect.** If it returns the same
+thing as success, the assertion is decoration.
+
+## #23 — the composite that was never assembled in a test — Step 5
+
+**Rule it proves:** testing the parts does not test the wiring, and the wiring
+is where a two-line factory can invert the whole feature.
+
+`WindowsAutostartBackend` cleans up whichever mechanism it was *not* given.
+Wiring `other` to the same backend as `chosen` makes `enable()` register and
+then immediately unregister — **autostart silently off, reported as success**.
+
+Every integration test assembled the composite itself, so the factory in
+`autostart.dart` was covered by nothing. Mutating `other: runKey` to
+`other: taskScheduler` left all 343 tests green.
+
+**Consequence:** a test that goes through the public factory and asserts *both*
+`chosen` and `other`. The habit: when a class's correctness is "these two
+collaborators are different things", the assembly point needs its own assertion —
+the collaborators being individually correct says nothing about it.
+
+## #24 — the guard whose rejecting branch one account cannot reach — Step 5
+
+**Rule it proves:** say which half of a guard the tests actually prove, or the
+comment becomes the lie the tests were supposed to prevent.
+
+The Task Scheduler tree is machine-wide where `HKEY_CURRENT_USER` is not, so two
+users of one installation have byte-identical executable paths — and this
+change made a `Run` key caller touch the task tree for the first time. The guard
+grew a second term: the task's principal must be the current user.
+
+Proving it end to end needs a task belonging to somebody else, and **an
+unelevated process cannot make one**. Measured, both ways: `schtasks /create
+/xml` naming `S-1-5-19` is refused with access denied, and naming an
+unresolvable SID is refused with "no mapping between account names and security
+IDs".
+
+Mutation testing then split the guard cleanly in two. Reading the **wrong
+property** for the principal is killed — the read is live and correct. Deleting
+the **term itself** survives — the rejecting branch is unreachable from one
+account. The test comment had claimed the second, which was #19 happening again
+in the same repository, three tickets later.
+
+**Consequence:** the comment states both halves and names the measurement that
+bounds the untestable one. `current_user_test.dart` covers the comparison
+directly, which is the part a single account *can* prove.

@@ -56,6 +56,32 @@ final class ExecutableNotFoundException extends AutostartException {
   String get message => 'No executable found at "$executablePath".';
 }
 
+/// Thrown when a registration succeeded but an **old one could not be removed**.
+///
+/// Windows can register a program at login two different ways, and switching
+/// between them means removing the registration the other one holds. That
+/// cleanup runs as a side effect of `enable()`, so when it fails the caller is
+/// in a state no single answer describes: autostart **is** on, and the program
+/// may launch **twice**.
+///
+/// It has its own type because the difference is not decorative. A caller that
+/// cannot tell this apart from "enable failed" will reasonably not save the
+/// user's preference and will report that autostart could not be turned on —
+/// while it is on. [cause] carries the failure underneath.
+final class MechanismCleanupException extends AutostartException {
+  /// Creates a failure describing an incomplete migration.
+  const MechanismCleanupException(this.cause);
+
+  /// What went wrong while removing the other mechanism's registration.
+  final AutostartException cause;
+
+  @override
+  String get message =>
+      'Autostart was registered, but a registration held by the other Windows '
+      'mechanism could not be removed, so the program may launch twice: '
+      '${cause.message}';
+}
+
 /// Thrown when an operating system call fails.
 ///
 /// Carries enough detail to be actionable in a log: which operation failed,

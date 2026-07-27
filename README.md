@@ -59,6 +59,26 @@ A combination that cannot be honoured is **refused, not ignored**: asking for
 > application collide on the same task name — the second registration fails with
 > access denied rather than overwriting the first.
 
+### Switching mechanisms is handled for you
+
+If version 1 of your tool registered through the `Run` key and version 2 asks
+for Task Scheduler, `enable()` removes the old registration as it makes the new
+one — otherwise the user gets your program **twice** at every login, with the
+console window still there. `disable()` clears both mechanisms for the same
+reason: "off" has to mean off.
+
+Two limits, both deliberate:
+
+- Cleanup removes a registration only when it names the **same executable
+  path**. Matching on the display name instead would let this package delete a
+  third party's autostart out of a namespace it shares. So if your installer
+  puts each version in its own directory, your own older registration is not
+  removed for you — remove it at uninstall time.
+- If the old registration cannot be removed, `enable()` throws
+  `MechanismCleanupException` **after** the new one is in place. Autostart is
+  on, and the program may launch twice; that is a different situation from
+  "could not enable", which is why it is a different exception.
+
 ### The user can override you, and `isEnabled()` says so
 
 On both mechanisms Windows keeps the user's own decision **somewhere other than
