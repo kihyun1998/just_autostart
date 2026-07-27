@@ -160,6 +160,17 @@ package. Consequences accepted: no `force` parameter, no additional exception
 type, and `isEnabled()` reads a veto that `enable()` will overwrite. **This is
 the maintainer's call to reverse, not a derivation to re-argue.**
 
+**What that rule is decided *on* — Windows evidence only.** The reference's
+override is in its *Windows* implementation; its macOS path delegates to an API
+with no force option at all. So the rule above is confirmed for one of the two
+platforms and **assumed** for the other: whether `launchctl enable
+gui/$UID/<label>` succeeds unprivileged is unmeasured, because launchd's disable
+overrides live in root-owned state. **#9 measures it and writes the answer back
+here.** If it cannot be cleared, `enable()` on macOS throws a typed exception
+naming the veto — the one thing it may not do is return success while
+`isEnabled()` still reads false, which is the reference's defect (lessons #2),
+not its behaviour.
+
 **But `enable()` must never silently fail.** This is *not* part of the behaviour
 being followed — it is the reference's defect. `LaunchAtLogin` swallows a failed
 `register()` into a log line, so the caller cannot tell success from failure and
