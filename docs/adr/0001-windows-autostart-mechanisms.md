@@ -148,9 +148,14 @@ structurally by not exposing the hive.
 
 - Hiding the console window costs roughly ten COM interfaces — `ITaskService`,
   `ITaskFolder`, `ITaskDefinition`, `ITriggerCollection`, `ILogonTrigger`,
-  `IActionCollection`, `IExecAction`, `IPrincipal`, `ITaskSettings`,
-  `IRegisteredTask` — plus BSTR and VARIANT marshalling;
-  `RegisterTaskDefinition` alone takes five VARIANTs.
+  `IActionCollection`, `IExecAction`, `IExecAction2`, `ITaskSettings`,
+  `IRegisteredTask` — plus BSTR and VARIANT marshalling. `Connect` takes four
+  VARIANTs and `RegisterTaskDefinition` three, all **by value**, which on x64
+  makes the struct's size load-bearing: too small and every argument behind it
+  shifts.
+- `IPrincipal` turns out not to be needed. Registering with an empty `userId`
+  and `TASK_LOGON_INTERACTIVE_TOKEN` already produces a task that runs as the
+  registering user, which #6 confirmed against the XML Task Scheduler emits.
 - That work sits on this package's **FFI sacred path**, where a wrong vtable
   offset is memory corruption rather than a failing test. The completeness pass
   is mandatory for it regardless of diff size.

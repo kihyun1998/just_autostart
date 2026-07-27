@@ -328,3 +328,134 @@ documents this; it appears only if you do the export **and** the import.
 **Consequence:** the entire implementation route changed from shelling out to
 `schtasks` to hand-written COM — roughly ten interfaces instead of one process
 spawn. Recorded in ADR-0001, and the reason #6 was split into #6a and #6b.
+
+## #12 — a struct that is the wrong size, and behaves perfectly — Step 5
+
+**Rule it proves:** size a `Struct` from the **widest** union member, not the
+member you use.
+
+`VARIANT` was modelled as a 2-byte type tag, three reserved shorts, and one
+machine word for the union — the shape every member this package constructs
+actually needs. It compiled, allocated, zeroed and read back cleanly. It was
+16 bytes; a real `VARIANT` is 24, because the widest union member is `BRECORD`
+— `{PVOID pvRecord; IRecordInfo* pRecInfo;}`, two pointers.
+
+Nothing about the wrong version looks wrong from Dart. What makes it dangerous
+is that every `VARIANT` parameter is passed **by value**: `Connect` takes four
+and `RegisterTaskDefinition` three. Eight bytes short means every argument
+*behind* the variant lands in the wrong register or stack slot — so the failure
+is not "the variant is wrong", it is `logonType`, `sddl` and the out-parameter
+all silently shifting. That can fail as a crash, or as a *success* with
+different meaning.
+
+It was caught by `expect(sizeOf<Variant>(), 24)` before a single COM call ran.
+
+**Consequence:** the FFI sacred path gets a size assertion for every struct
+crossing the boundary by value, written from the C definition rather than from
+the fields the code touches. And a size test is not enough on its own — see #16.
+
+## #13 — the sibling's hardening did not apply, and copying it made things worse — Step 1
+
+**Rule it proves:** a practice inherited from a reference is a *claim*, and Step
+1 verifies claims against the real source — including the reference's own.
+
+`just_font_scan` opens its DLLs by absolute path, `%SystemRoot%\System32\ole32.dll`,
+commented as preventing DLL hijacking. This package copied it. The refuting lens
+asked whether the premise held and the answer was on the machine:
+
+```
+HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs
+  advapi32  advapi32.dll
+  ole32     ole32.dll
+  OLEAUT32  OLEAUT32.dll
+```
+
+Every DLL this package opens is a **KnownDLL**. The loader resolves those from a
+section object mapped at boot and never consults the search path, so the bare
+name was already unhijackable. The absolute path did not add safety — it
+*subtracted* it, by introducing a directory read from an environment variable
+where there had been no path at all.
+
+It also retired a follow-up: "harden `registry.dart` to load `advapi32` by
+absolute path" was recorded as technical debt and was never a defect.
+
+**Consequence:** `loadKnownDll` loads by bare name and carries the KnownDLLs
+reason. When a sibling's practice is adopted, its *premise* is checked here, not
+assumed to travel.
+
+## #14 — the type system cannot carry "synchronous" — Step 5
+
+**Rule it proves:** when a contract cannot be expressed as a type, the
+completeness pass has to look for the hole the type leaves.
+
+COM's apartment is per-thread state and a Dart isolate is not pinned to an OS
+thread across event-loop turns, so `withCom` opens and closes the apartment
+around one **synchronous** block. That requirement was documented at length in
+the doc comment, and the signature is `T withCom<T>(T Function() body)`.
+
+`T` binds to `Future` as happily as to anything else. `withCom(() async { … })`
+compiles. The body would return at its first `await`, the `finally` would tear
+the apartment down immediately, and every COM release the body had arranged
+would then run on a thread with no apartment. Heap corruption, not an exception.
+
+No test would have found it, because no test would have written it — the trap is
+for whoever adds `await` later, in the ticket that builds on this one.
+
+**Consequence:** `withCom` now checks `result is Future` at runtime and throws.
+Any invariant that the signature cannot state gets a runtime check, and the
+completeness pass asks specifically what the types *fail* to say.
+
+## #15 — the test that passes on CI and fails on the author's desk — Step 4
+
+**Rule it proves:** a proof read out of a tool's human-facing output inherits
+that output's locale.
+
+`schtasks /query /v /fo LIST` is the readable way to confirm a registered task,
+and the assertion `contains('On demand only')` was written against it. On a
+Korean-locale Windows the same field reads `요청 시에만`. The test failed
+locally and would have passed on GitHub's English `windows-latest` — the worst
+direction, since CI would have certified an assertion that only ever held on
+CI's machine.
+
+`schtasks /query /xml ONE` emits the same document everywhere:
+
+```xml
+  <Triggers />
+  <Actions Context="Author">
+    <Exec><Command>…\dart.exe</Command></Exec>
+  </Actions>
+```
+
+**Consequence:** every assertion against an external Windows tool reads a
+machine-readable form. Localised output is for humans reading a terminal, never
+for a test.
+
+## #16 — an assertion that could not have failed — Step 5
+
+**Rule it proves:** the completeness pass is a *mutation* question, not a
+reading question. "Does this test cover the constant" is answered by changing
+the constant.
+
+`createTask` registers with `TASK_LOGON_INTERACTIVE_TOKEN` (3), and a test
+asserted the resulting task runs as the current user — presented as covering
+this package's "never needs elevation" invariant. The refuting lens set the
+constant to `TASK_LOGON_NONE` (0) and the suite stayed green. Registering with
+either value produced **byte-identical** XML, because with an empty `userId`
+Task Scheduler normalises the logon type itself.
+
+The assertion was true, and about something the constant did not control.
+
+Twenty-four mutations were run over this change in total; that one and thirteen
+others survived the first pass. Every survivor became a test, and none survives
+now.
+
+One caveat on the method, learned the same afternoon: **check that the mutation
+applied.** A textual substitution that silently matches nothing leaves the code
+untouched, the suite green, and the result reported as "survived" — which reads
+as a coverage gap that is not there. That is the safe direction to fail, since
+it prompts a look rather than false confidence, but a `grep -c` on the mutated
+text costs nothing and removes the ambiguity.
+
+**Consequence:** on the sacred paths, a test is only credited once a mutation of
+the line it claims to cover turns it red. The comment on that test now says what
+it does *not* pin, so the next reader does not re-inherit the belief.
