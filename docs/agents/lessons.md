@@ -227,3 +227,104 @@ its own.
 namespace with each other, exactly as the `Run` key is shared with other
 applications. The sacred path this package guards for third parties applies to
 its own test files too.
+
+---
+
+## #9 — A measurement that answered the wrong question, and read the same either way — Step 4
+
+**Rule it proves:** beware a measurement that can misread itself.
+
+Deciding whether Task Scheduler could hide a console window, the first probe
+asked:
+
+```dart
+final hwnd = getConsoleWindow();
+'hwnd=$hwnd hasConsole=${hwnd != 0}'
+```
+
+Both candidate routes reported `hasConsole=true`, and the conclusion drawn was
+"neither hides the window."
+
+`GetConsoleWindow()` returns a handle whenever the process **has** a console. A
+console created with `SW_HIDE` still has one. The probe was asking "does a
+console exist", which is true in every case, rather than "is its window visible".
+
+Re-measured with `IsWindowVisible(GetConsoleWindow())`, the two routes separated
+immediately:
+
+```
+WSCRIPT hidden wrapper -> hwnd=3411056 visible=false
+TASK InteractiveToken  -> hwnd=6884938 visible=true
+```
+
+**What gave it away:** the two routes agreeing. A measurement that returns the
+same answer for a case known to differ is reporting its own blind spot, not the
+world.
+
+---
+
+## #10 — "The documentation lists the properties" is not the same as enumerating them — Step 1
+
+**Rule it proves:** verify against the real thing, not against a summary of it —
+and the API surface is a real thing you can query.
+
+Working from the documented `IExecAction` — `Path`, `Arguments`,
+`WorkingDirectory`, `Id` — the conclusion was recorded that Task Scheduler
+exposes no window-style setting, and therefore could not hide a console window
+without elevation. That conclusion was reported to the maintainer as measured.
+
+Enumerating the live COM object took one line:
+
+```powershell
+$svc = New-Object -ComObject Schedule.Service; $svc.Connect()
+$def = $svc.NewTask(0); $act = $def.Actions.Create(0)
+$act | Get-Member -MemberType Property | ForEach-Object { $_.Name }
+```
+```
+Arguments
+HideAppWindow      <-- undocumented
+Id
+Path
+Type
+WorkingDirectory
+```
+
+Registering with `HideAppWindow = true`, unelevated, produced `visible=false`.
+The reported conclusion was wrong and the ticket it would have closed off was
+viable all along.
+
+**Cost had it stood:** #6 would have been rescoped or cancelled on a false
+finding, and the package would have shipped without the feature the ticket exists
+for.
+
+---
+
+## #11 — Task Scheduler exports XML it will not import — Step 1
+
+**Rule it proves:** a round trip is two halves, and doing only one of them proves
+nothing.
+
+Having found `HideAppWindow` through COM, the natural next step was to keep the
+simpler `schtasks /create /xml` implementation and just add the element — Task
+Scheduler *exports* it, after all:
+
+```xml
+      <HideAppWindow>true</HideAppWindow>
+```
+
+Import refuses it, at every schema version:
+
+```
+ERROR: The task XML contains an unexpected node.
+(6,364):HideAppWindow
+version 1.3 -> exit=1
+version 1.4 -> exit=1
+version 1.5 -> exit=1
+```
+
+So a task Windows itself exported cannot be recreated from that export. Nothing
+documents this; it appears only if you do the export **and** the import.
+
+**Consequence:** the entire implementation route changed from shelling out to
+`schtasks` to hand-written COM — roughly ten interfaces instead of one process
+spawn. Recorded in ADR-0001, and the reason #6 was split into #6a and #6b.

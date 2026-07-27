@@ -110,8 +110,22 @@ Add to this list when a pass finds another.
   space is silently truncated at the space.
 - A scheduled task can **exist while disabled**. Existence ≠ enabled.
 - A `dart compile exe` output is a **console-subsystem PE**; the subsystem is
-  fixed at compile time, so the registry mechanism shows a console window at
-  every login and no runtime API can suppress it.
+  fixed at compile time. Whether its console window is *visible* is decided by
+  `STARTUPINFO.wShowWindow`, passed by whichever process calls `CreateProcess` —
+  never by the launched program. [ADR-0001](../adr/0001-windows-autostart-mechanisms.md)
+  records which launchers can be told to pass `SW_HIDE`; the registry `Run` key
+  cannot.
+- **`<Hidden>true</Hidden>` in a scheduled task hides the *task* from the Task
+  Scheduler UI**, not the process. The name invites the opposite reading.
+- **`IShellLink::SetShowCmd(SW_HIDE)` is silently normalised to
+  `SW_SHOWNORMAL` on save.** The shortcut file format cannot represent a hidden
+  window at all.
+- **Task Scheduler exports `<HideAppWindow>` but will not import it.**
+  `schtasks /create /xml` rejects the element at every schema version, so a task
+  exported by Windows cannot be recreated from its own XML.
+- **A logon trigger requires elevation through `schtasks /sc ONLOGON`** but not
+  through the XML form with an explicit `<UserId>`. Task creation itself is
+  unprivileged; the logon trigger specifically is not.
 - MSIX / packaged apps take an entirely different path. Out of scope here, but it
   is state that exists and a report from a packaged app is not a defect in this
   package.
@@ -144,7 +158,8 @@ siblings that do exist cover the *technique*, not the domain — route according
 | Change type | Real source to read |
 |---|---|
 | **Windows registry semantics** | Microsoft Learn for the `Reg*W` functions, read raw. Cross-check the marshalling against `win32_registry`'s source. `StartupApproved` byte semantics: `launch_at_startup`'s Windows implementation — **as prior art, not as authority** (it has a real defect; lessons #3) |
-| **Windows COM (`IShellLink`)** | sibling **`just_font_scan`** — real `ole32.dll` COM from pure Dart, in production. Then `package:win32`'s `examples/shortcut.dart` |
+| **Windows COM (Task Scheduler, `IShellLink`)** | sibling **`just_font_scan`** — real `ole32.dll` COM from pure Dart, in production. Then `package:win32`'s generated interfaces. **Enumerate the live COM properties** (`New-Object -ComObject Schedule.Service` + `Get-Member`) rather than trusting the documented interface: that is what surfaced the undocumented `IExecAction.HideAppWindow` after the documentation said no such setting existed |
+| **Which Windows mechanism to use at all** | [ADR-0001](../adr/0001-windows-autostart-mechanisms.md) — the measured table. Do not re-derive it; a new mechanism question is a conformance item under that record |
 | **macOS launchd plist** | Apple's `launchd.plist(5)` man page. `launch_at_startup` has **no macOS implementation** to read — it delegates — so the behavioural reference is `sindresorhus/LaunchAtLogin`'s Swift source |
 | **macOS ObjC / framework FFI** | sibling **`just_font_scan`** — `libobjc.A.dylib`, `objc_autoreleasePoolPush`/`Pop`, `CFRelease`. It has already solved the autorelease-pool discipline that a naive FFI call gets wrong |
 | **Pure-Dart package structure, OS-branching FFI** | sibling **`flutter_inactive_timer`** — resolves bindings as a pure function of the OS name so every arm is testable off-host. This repo converged on the same shape independently |
@@ -270,9 +285,15 @@ Everything else is gated on enumeration risk as usual.
   present `.pubignore` also *replaces* `.gitignore` for archive purposes, so its
   entries must be repeated there.
 - **Decision records** — `docs/adr/`, per `docs/agents/domain.md`. **Areas that
-  already carry a record: none.** That empty list is what the filing step checks
-  before proposing a spine, so a cluster with a home never gets a second one —
-  keep it current as records land.
+  already carry a record:**
+  - **Windows autostart mechanisms** — [ADR-0001](../adr/0001-windows-autostart-mechanisms.md)
+    (accepted). Which mechanism a requirement resolves to, why `schtasks`,
+    shortcuts, S4U and `wscript` are each closed, and the measurements behind it.
+    A new mechanism question in this area is a **conformance item under the
+    record**, not a new spine.
+
+  That list is what the filing step checks before proposing a spine, so a cluster
+  with a home never gets a second one — keep it current as records land.
 - **The issue tracker** is the decision trail until `docs/adr/` exists.
 
 **What earns a record here:** two or more of theflow's promotion triggers in one
