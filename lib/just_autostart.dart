@@ -5,8 +5,8 @@
 /// backend raises [UnsupportedPlatformException] rather than quietly doing
 /// nothing.
 ///
-/// No platform backend is wired up yet, so at this version *every* operating
-/// system raises [UnsupportedPlatformException].
+/// Windows is served by the registry `Run` key. macOS is not implemented yet
+/// and currently raises [UnsupportedPlatformException] like any other platform.
 library;
 
 export 'src/autostart.dart';

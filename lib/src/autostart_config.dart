@@ -1,3 +1,5 @@
+import 'list_equals.dart';
+
 /// Everything a backend needs to register a program at login.
 ///
 /// [executablePath] is required and is never inferred. `Platform.resolvedExecutable`
@@ -65,7 +67,7 @@ class AutostartConfig {
         other.appName == appName &&
         other.label == label &&
         other.executablePath == executablePath &&
-        _sameArgs(other.args, args);
+        listEquals(other.args, args);
   }
 
   @override
@@ -76,12 +78,4 @@ class AutostartConfig {
   String toString() =>
       'AutostartConfig(appName: $appName, label: $label, '
       'executablePath: $executablePath, args: $args)';
-
-  static bool _sameArgs(List<String> a, List<String> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
-    }
-    return true;
-  }
 }

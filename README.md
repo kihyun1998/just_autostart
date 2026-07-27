@@ -7,15 +7,26 @@ where you open Xcode or hand-edit a Swift file.
 
 ## Status
 
-**Early. No platform backend is wired up yet** — at this version every
-operating system raises `UnsupportedPlatformException`. The cross-platform
-surface below is stable enough to build against; the backends land next.
+**Early, and Windows-only so far.** The cross-platform surface is stable enough
+to build against; macOS is next.
 
 | Platform | Mechanism | State |
 | -------- | --------- | ----- |
-| Windows | Registry `Run` key, or Task Scheduler | Not implemented yet |
+| Windows | Registry `Run` key | **Works** |
+| Windows | Task Scheduler (hidden / delayed start) | Not implemented yet |
 | macOS | launchd user agent | Not implemented yet |
 | Everything else | — | Raises `UnsupportedPlatformException` |
+
+> **Windows console window.** A `dart compile exe` output is a console-subsystem
+> executable, and the subsystem is fixed at compile time — so an entry
+> registered through the `Run` key shows a console window at every login and no
+> runtime API can suppress it. The Task Scheduler mechanism exists to solve
+> that, and is not built yet.
+
+> **`isEnabled()` does not yet see the Task Manager toggle.** Windows records a
+> user switching an entry off in a *second* registry key, and this version reads
+> only the first — so an entry the user disabled still reports as enabled. Being
+> fixed next.
 
 ## Usage
 

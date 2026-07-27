@@ -4,6 +4,7 @@ import 'autostart_backend.dart';
 import 'autostart_config.dart';
 import 'autostart_platform.dart';
 import 'backends/unsupported_backend.dart';
+import 'backends/windows/windows_run_key_backend.dart';
 
 /// Registers a program to launch when the user logs in.
 ///
@@ -45,7 +46,7 @@ class Autostart {
   factory Autostart.forOperatingSystem(
     AutostartConfig config,
     String operatingSystem,
-  ) => Autostart.withBackend(_backendFor(operatingSystem));
+  ) => Autostart.withBackend(_backendFor(config, operatingSystem));
 
   final AutostartBackend _backend;
 
@@ -59,16 +60,14 @@ class Autostart {
   Future<bool> isEnabled() => _backend.isEnabled();
 }
 
-AutostartBackend _backendFor(String operatingSystem) {
+AutostartBackend _backendFor(AutostartConfig config, String operatingSystem) {
   return switch (resolveAutostartPlatform(operatingSystem)) {
-    // The Windows and macOS backends are not built yet. Until they are, every
-    // platform is served by the backend that refuses loudly. The switch is
-    // exhaustive over the enum, so adding a backend means the analyzer points
-    // at this spot rather than letting a platform fall through unnoticed.
-    AutostartPlatform.windows ||
-    AutostartPlatform.macos ||
-    AutostartPlatform.unsupported => UnsupportedPlatformBackend(
-      operatingSystem,
-    ),
+    // The registry `Run` key is the only Windows mechanism so far. Task
+    // Scheduler, and the choice between the two, arrive with the mechanism
+    // selector.
+    AutostartPlatform.windows => WindowsRunKeyBackend(config: config),
+    // The macOS backend is not built yet.
+    AutostartPlatform.macos || AutostartPlatform.unsupported =>
+      UnsupportedPlatformBackend(operatingSystem),
   };
 }

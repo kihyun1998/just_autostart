@@ -174,3 +174,56 @@ a proposed API surface that would have been asymmetric across platforms.
 
 **The asymmetry that makes this rule pay:** re-confirming costs one fetch;
 publishing an API on a wrong premise costs a breaking change.
+
+---
+
+## #7 — `0x80000001` is the wrong `HKEY_CURRENT_USER` on 64-bit — Step 1
+
+**Rule it proves:** verify constants against real source; a value you can recite
+is still a value you have not checked.
+
+The obvious spelling of the predefined handle is the documented constant:
+
+```dart
+const hkeyCurrentUser = 0x80000001;   // wrong
+```
+
+`package:win32`'s generated source says otherwise (`constants.g.dart:4613`):
+
+```dart
+final HKEY_CURRENT_USER = HKEY(Pointer.fromAddress(-2147483647));
+```
+
+The Win32 header defines it as `((HKEY)(ULONG_PTR)((LONG)0x80000001))`. The
+`(LONG)` cast makes the value signed *before* it widens, so on 64-bit the handle
+is `0xFFFFFFFF80000001`. Passing the unsigned literal hands Windows a handle it
+does not recognise.
+
+**Why it would not have been caught quickly:** every call would fail with the
+same generic status, and the natural suspect is the FFI signature, not the
+constant that "obviously" matches the documentation.
+
+---
+
+## #8 — Two test files sharing one scratch key destroyed each other — Step 7
+
+**Rule it proves:** run the *full* suite, not the file you are working on.
+
+`registry_test.dart` and `windows_run_key_backend_test.dart` both used a scratch
+subkey under `HKCU\Software\just_autostart_test`, and both deleted that whole
+parent in `tearDownAll`. Each file passed in isolation. `dart test` runs files
+concurrently, so whichever finished first deleted the other's data mid-run:
+
+```
+Failing tests:
+  test\windows\registry_test.dart: WindowsRegistry deletes a value it wrote
+```
+
+**Fix:** each file owns a distinct top-level scratch tree
+(`just_autostart_test_registry`, `just_autostart_test_backend`) and deletes only
+its own.
+
+**The general shape:** integration tests that reach real OS state share a
+namespace with each other, exactly as the `Run` key is shared with other
+applications. The sacred path this package guards for third parties applies to
+its own test files too.

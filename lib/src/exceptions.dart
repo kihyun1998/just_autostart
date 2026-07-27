@@ -23,8 +23,9 @@ sealed class AutostartException implements Exception {
 /// Raised rather than quietly doing nothing, because a silent no-op lets a
 /// developer ship a broken feature without ever seeing a failure.
 ///
-/// Windows and macOS are the platforms this package targets, but no backend is
-/// wired up yet — at this version every operating system raises this.
+/// Windows and macOS are the platforms this package targets. Windows is
+/// implemented; macOS is not yet, so it raises this alongside every platform
+/// that is out of scope.
 final class UnsupportedPlatformException extends AutostartException {
   /// Creates a failure naming the [operatingSystem] that has no backend.
   const UnsupportedPlatformException(this.operatingSystem);

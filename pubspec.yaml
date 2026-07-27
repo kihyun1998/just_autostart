@@ -13,3 +13,9 @@ environment:
 dev_dependencies:
   lints: ^6.0.0
   test: ^1.25.6
+dependencies:
+  # The allocator and UTF-16 marshalling `dart:ffi` does not ship. Pure Dart,
+  # maintained by the Dart team, and the only runtime dependency — deliberately
+  # not `package:win32`, which would pull in thousands of generated bindings to
+  # call six advapi32 functions.
+  ffi: ^2.1.4

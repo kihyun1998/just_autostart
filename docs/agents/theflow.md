@@ -64,6 +64,9 @@ blind spot does not exist here. The real blind spot is per-runner (Step 7).
 | `lib/src/autostart_platform.dart` | `resolveAutostartPlatform` — OS name → backend, **as a pure function of the string**, so every arm is testable off-host |
 | `lib/src/exceptions.dart` | sealed `AutostartException` hierarchy. Sealed on purpose: adding a failure mode makes the analyzer point at every exhaustive switch |
 | `lib/src/backends/` | one backend per platform. `unsupported_backend.dart` throws from all three operations rather than returning a quiet `false` |
+| `lib/src/backends/windows/run_command_line.dart` | pure encode/decode of the registry `Run` value. The **canonical form** (path always quoted) is what lets `disable()` tell our entries from a third party's |
+| `lib/src/backends/windows/registry.dart` | hand-written `advapi32` bindings and `RegistryLocation` — the backend's **only** seam. No interface over it and no fake of it: the marshalling *is* the dangerous part |
+| `lib/src/backends/windows/windows_run_key_backend.dart` | the `Run` key backend |
 | `example/` | the **only in-repo consumer seam** — reaches the package through the public API only. No separate `pubspec.yaml`, so `dart analyze` covers it but `dart test` does **not** run it (see Step 7) |
 
 ## Hidden-state list
@@ -76,7 +79,18 @@ Add to this list when a pass finds another.
 
 - `StartupApproved\Run` holds a **12-byte binary** value per entry. **Odd first
   byte = the user disabled it**; even, empty, and absent all mean enabled. Format
-  is undocumented by Microsoft.
+  is undocumented by Microsoft. **Measured on a real machine (#4):** enabled
+  entries are `02` followed by eleven zero bytes; a user-disabled entry is `03`,
+  three zero bytes, and then a little-endian **FILETIME** recording when it was
+  switched off. The reference implementation's comment describes only the parity
+  byte.
+- **`HKEY_CURRENT_USER` is `Pointer.fromAddress(-2147483647)`, not
+  `0x80000001`.** The Win32 header casts to `(LONG)` before widening to
+  `ULONG_PTR`, so the 64-bit handle is sign-extended to `0xFFFFFFFF80000001`.
+  The unsigned literal produces a handle Windows does not recognise.
+- **`RegQueryValueExW` does not guarantee a null terminator** on string values;
+  `RegGetValueW` does. A value another program wrote without one is a read past
+  the end. Read with `RegGetValueW`.
 - The `Run` key is a **shared namespace keyed by value name**. Deleting the wrong
   name deletes *another application's* autostart, unrecoverably. Same for the
   Task Scheduler folder.
