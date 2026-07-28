@@ -113,6 +113,8 @@ final class MacosAutostartBackend implements AutostartBackend {
       );
     }
 
+    _restrictPermissions(_plistFile);
+
     launchctl.clearOverride(config.label);
     if (_isVetoedByUser()) {
       throw AutostartOsException(
@@ -124,6 +126,51 @@ final class MacosAutostartBackend implements AutostartBackend {
     }
 
     if (options.activateImmediately) _activate();
+  }
+
+  /// Clears the group and other **write** bits on the written agent.
+  ///
+  /// launchd refuses a job definition that anyone but its owner can write, and
+  /// the refusal is **silent**: the file stays in `LaunchAgents`, parses, and
+  /// nothing launches. `File.writeAsStringSync` takes whatever the process
+  /// umask gives it — `0644` under the usual `0022`, but `0666` under `umask 0`
+  /// and `0664` under `umask 002`, both of which occur in build systems and
+  /// containers. Measured on macOS 14.5: the same plist loads at `0644` and
+  /// fails with `Bootstrap failed: 5: Input/output error` at `0666`.
+  ///
+  /// It clears those two bits rather than forcing `0644`, so a caller who
+  /// deliberately made the agent `0600` keeps it private.
+  ///
+  /// `dart:io` has no `chmod`, so this shells out like the `launchctl` calls do
+  /// — still no native code. A failure to restrict is raised rather than
+  /// ignored: the registration would otherwise be one launchd will not load.
+  void _restrictPermissions(File file) {
+    final ProcessResult result;
+    try {
+      result = Process.runSync('chmod', ['go-w', file.path]);
+    } on ProcessException catch (error) {
+      throw AutostartOsException(
+        operation: 'restrict permissions on the LaunchAgent plist',
+        detail: error.message,
+      );
+    }
+
+    if (result.exitCode != 0) {
+      throw AutostartOsException(
+        operation: 'restrict permissions on the LaunchAgent plist',
+        detail: '${result.stderr}'.trim(),
+        errorCode: result.exitCode,
+      );
+    }
+  }
+
+  /// Whether [file] is writable by group or other, which makes launchd refuse
+  /// it — see [_restrictPermissions].
+  ///
+  /// `0x10` is the group-write bit and `0x2` the other-write bit.
+  static bool _isWorldWritable(File file) {
+    final mode = file.statSync().mode;
+    return mode & 0x10 != 0 || mode & 0x2 != 0;
   }
 
   /// Starts the agent in the current session, replacing a job already loaded
@@ -266,6 +313,11 @@ final class MacosAutostartBackend implements AutostartBackend {
     if (!listEquals(parsed.args, config.args)) return false;
     if (!parsed.runAtLoad) return false;
     if (parsed.disabled) return false;
+    // A registration launchd will refuse is not an enabled one. Same class as
+    // the two keys above — present, well formed, and inert. This catches a
+    // plist written by an earlier version under a permissive umask, or one
+    // whose permissions were changed after it was written.
+    if (_isWorldWritable(file)) return false;
     if (_isVetoedByUser()) return false;
 
     return true;

@@ -214,6 +214,81 @@ void main() {
     });
   });
 
+  group('plist permissions', () {
+    const label = 'dev.justautostart.test';
+
+    /// The mode bits, as the octal a human reads.
+    String modeOf(File file) => (file.statSync().mode & 0xFFF).toRadixString(8);
+
+    test('a permissive umask cannot leave the agent group-writable', () async {
+      // launchd refuses a job definition writable by group or other, and the
+      // refusal is silent — the file is there, parses, and nothing launches.
+      // Measured: the same plist loads at 0644 and fails with "Bootstrap
+      // failed: 5" at 0666. Writing inherits the umask, so this pre-creates the
+      // file the way `umask 0` would leave it; writeAsStringSync keeps an
+      // existing file's mode.
+      final file = plistFile(label)..writeAsStringSync('placeholder');
+      Process.runSync('chmod', ['666', file.path]);
+      expect(modeOf(file), '666', reason: 'precondition');
+
+      await backend().enable();
+
+      final mode = file.statSync().mode;
+      expect(
+        mode & 0x10,
+        0,
+        reason: 'group must not have write: ${modeOf(file)}',
+      );
+      expect(
+        mode & 0x2,
+        0,
+        reason: 'other must not have write: ${modeOf(file)}',
+      );
+    });
+
+    test('a stricter mode is preserved rather than loosened to 644', () async {
+      // Restricting means clearing the group/other write bits, not forcing a
+      // mode: a caller who deliberately made the file private keeps it private.
+      final file = plistFile(label)..writeAsStringSync('placeholder');
+      Process.runSync('chmod', ['600', file.path]);
+
+      await backend().enable();
+
+      expect(modeOf(file), '600');
+    });
+
+    test('isEnabled is false while the plist is group-writable', () async {
+      // A registration launchd will reject is not an enabled one, and this is
+      // the same class as RunAtLoad or the in-plist Disabled key: present, well
+      // formed, and inert.
+      final b = backend();
+      await b.enable();
+      expect(await b.isEnabled(), isTrue, reason: 'precondition');
+
+      Process.runSync('chmod', ['666', plistFile(label).path]);
+
+      expect(await b.isEnabled(), isFalse);
+    });
+
+    test('the written agent is one launchd actually accepts', () async {
+      // The end-to-end form of the same claim, against the real command.
+      final file = plistFile(label)..writeAsStringSync('placeholder');
+      Process.runSync('chmod', ['666', file.path]);
+
+      await MacosAutostartBackend(
+        config: AutostartConfig(
+          appName: 'JustAutostartPermTest',
+          label: label,
+          executablePath: '/usr/bin/true',
+        ),
+        launchAgentsDirectory: scratch,
+      ).enable();
+
+      addTearDown(() => const SystemLaunchctl().bootout(label));
+      expect(const SystemLaunchctl().bootstrap(file.path), isTrue);
+    });
+  });
+
   group('optional agent configuration', () {
     test('reaches the written file only when configured', () async {
       await MacosAutostartBackend(

@@ -79,6 +79,12 @@ Unreleased.
   the exit codes cannot be trusted for this, because `launchctl` fails both when
   bootstrapping an already-loaded agent and when booting out one that is not
   loaded, which are the ordinary repeat paths.
+- The written agent is never left writable by group or other. launchd refuses
+  such a job definition **silently**, and `File.writeAsStringSync` inherits the
+  process umask — so under `umask 0` or `umask 002` the registration looked
+  successful, reported as enabled, and could never launch. `enable()` now clears
+  those two bits, keeping a stricter mode as it found it, and `isEnabled()`
+  treats a group- or other-writable agent as not enabled.
 - `ExecutablePermissionException` reports an executable that exists but has no
   execute bit — it would pass an existence check and then fail to launch at
   login. `MalformedRegistrationException` reports a plist too corrupt to read

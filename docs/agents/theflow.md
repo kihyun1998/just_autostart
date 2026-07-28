@@ -229,6 +229,17 @@ Add to this list when a pass finds another.
     changed configuration take effect instead of leaving the old job running.
   - `bootstrap` accepts a plist **outside** `~/Library/LaunchAgents` (measured
     from a temp dir, exit 0), which is why the directory seam is testable.
+- **launchd silently refuses a plist that group or other can write.** Measured
+  (#13): the same job definition loads at `0644` and fails with `Bootstrap
+  failed: 5: Input/output error` at `0666`. `File.writeAsStringSync` inherits
+  the **umask**, so this is invisible under the usual `0022` and appears under
+  `umask 0` / `umask 002` — build systems, containers. It is the package's own
+  worst failure shape: the file exists, parses, has `RunAtLoad`, carries no
+  veto, so `isEnabled()` said *true* while nothing could ever launch. `enable()`
+  now clears the group/other write bits (`chmod go-w`, not `chmod 644` — a
+  deliberate `0600` stays private) and `isEnabled()` reads the mode as one more
+  enablement condition. The same rule applies to the *directory* and to the
+  program's own path per `launchd.info`; only the plist is enforced here.
 - **launchd resolves a relative path against its own working directory, not the
   caller's.** `WorkingDirectory` is a `chdir(2)` and the `StandardOutPath` /
   `StandardErrorPath` files are opened by launchd itself (`launchd.plist(5)`),
