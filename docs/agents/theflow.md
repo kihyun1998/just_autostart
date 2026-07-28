@@ -238,8 +238,12 @@ Add to this list when a pass finds another.
   veto, so `isEnabled()` said *true* while nothing could ever launch. `enable()`
   now clears the group/other write bits (`chmod go-w`, not `chmod 644` — a
   deliberate `0600` stays private) and `isEnabled()` reads the mode as one more
-  enablement condition. The same rule applies to the *directory* and to the
-  program's own path per `launchd.info`; only the plist is enforced here.
+  enablement condition. **Confirmed at the login scan too, not only at
+  `bootstrap`** — a `0666` plist planted before a real restart did not run,
+  while a `0644` one beside it did (the login verification below). That settles
+  the validity condition #13 was filed with. The same rule applies to the
+  *directory* and to the program's own path per `launchd.info`; only the plist
+  is enforced here.
 - **launchd resolves a relative path against its own working directory, not the
   caller's.** `WorkingDirectory` is a `chdir(2)` and the `StandardOutPath` /
   `StandardErrorPath` files are opened by launchd itself (`launchd.plist(5)`),
@@ -373,6 +377,34 @@ that only round-trips through our own code is a feel test.
 "the bytes are what we intended", never "the program starts at login". Actual
 login verification is manual, once per backend, and its absence from CI is a
 known gap — not a covered case. Say which of the two you have.
+
+**macOS: done once, on a real restart (2026-07-28, macOS 14.5).** Four agents
+were registered through the **public API** onto a real `~/Library/LaunchAgents`,
+all launching one `dart compile exe` binary — a bare Mach-O with no `.app`
+bundle, the shape the whole mechanism choice rests on — and the machine was
+restarted. Every prediction `isEnabled()` made held:
+
+| agent | planted as | `isEnabled()` predicted | at login |
+|---|---|---|---|
+| A | plist `0644`, args, redirection, cwd, env | true | **ran** |
+| B | `launchctl disable`d (the Login Items veto) | false | **did not run** |
+| C | plist `chmod 0666` after writing | false | **did not run** |
+| D | `keepAlive`, long-lived | true | **ran, still alive** |
+
+A's evidence carried `XPC_SERVICE_NAME=dev.justautostart.proof.a` — a variable
+**launchd itself sets** — so the program was started by launchd as our agent
+rather than by anything else. It also proved the parts no unit test reaches:
+`argv` kept `arg with spaces` as one argument and `a<b>&c` decoded intact, so
+the XML escaping survives Apple's own parser at login; `cwd` was the configured
+`WorkingDirectory`; `JA_TEST_VAR` was `hello&<world>`; and both redirect files
+had content. D's `cwd=/` and absent `JA_TEST_VAR` confirmed the other half of
+the design — an unset option is *absent*, left to launchd's default, not
+written with ours.
+
+**B and C are why this is evidence rather than a demo.** A running proves the
+happy path; the two that had to *stay* silent are what show `isEnabled()` is not
+merely optimistic. **Windows has had no equivalent run** — that half of this
+trap is still open.
 
 **Trap — the example is a proof surface, and the tests are not.** The 31 tests
 at the time of writing are pure functions and facade delegation; they passed

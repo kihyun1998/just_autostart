@@ -687,3 +687,36 @@ loaded, exit 3 when not loaded), so an exit code cannot be the outcome report.
 the measurement is recorded in the issue where the lens's convergence claim can
 rest on it. The split is not "who is capable" but "who can be granted
 permission".
+
+## #26 — the login test that would have passed while two lies went unnoticed — Step 4
+
+**Rule it proves:** a verification of "does it work" needs the cases that must
+**not** work, or it only measures the happy path.
+
+The macOS backend's one manual login verification could have been a single
+agent: register it, restart, see it run. That version passes, and everything it
+touches is real — a `dart compile exe` binary, a genuine restart, launchd's own
+`XPC_SERVICE_NAME` in the evidence.
+
+It would also have said nothing about the two claims most likely to be wrong,
+because both are claims that something *stays off*:
+
+| planted | `isEnabled()` said | at login |
+| --- | --- | --- |
+| `launchctl disable`d (the Login Items veto) | false | did not run |
+| plist `chmod 0666` after writing | false | did not run |
+
+`isEnabled()` is a **prediction**; launchd is the truth. A one-agent test can
+only ever confirm the optimistic half of that prediction — and optimism is
+exactly this package's failure mode, the one `CLAUDE.md` names: a registration
+that reports enabled while nothing launches. The negative controls are what
+distinguish "reports true correctly" from "reports true always".
+
+The permission case paid twice over. #13 was filed with the honest caveat that
+only `bootstrap`'s refusal had been measured and *"the login path itself is not
+separately measured"*. Planting that agent alongside the others cost nothing and
+settled the caveat in the same restart.
+
+**Consequence:** a manual verification is designed as a **matrix of predictions**
+— every case where the answer must be *no* gets an agent too — and the write-back
+records which predictions held, not that the feature worked.
