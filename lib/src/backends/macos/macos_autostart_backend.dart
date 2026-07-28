@@ -4,6 +4,7 @@ import '../../autostart_backend.dart';
 import '../../autostart_config.dart';
 import '../../exceptions.dart';
 import '../../list_equals.dart';
+import '../../macos_options.dart';
 import 'launch_agent_plist.dart';
 import 'launchctl.dart';
 
@@ -30,10 +31,17 @@ final class MacosAutostartBackend implements AutostartBackend {
     required this.config,
     Directory? launchAgentsDirectory,
     this.launchctl = const SystemLaunchctl(),
+    this.options = const MacosAutostartOptions(),
   }) : _launchAgentsDirectory = launchAgentsDirectory;
 
   /// What to register.
   final AutostartConfig config;
+
+  /// How launchd should run it — the optional agent settings.
+  ///
+  /// Every unset value is left out of the plist entirely, so the default
+  /// instance produces the minimal agent.
+  final MacosAutostartOptions options;
 
   /// Reads and clears the user's launchd disable overrides — the second store,
   /// separate from the plist, that records a Login Items veto.
@@ -87,6 +95,11 @@ final class MacosAutostartBackend implements AutostartBackend {
       label: config.label,
       executablePath: config.executablePath,
       args: config.args,
+      keepAlive: options.keepAlive,
+      standardOutPath: options.standardOutPath,
+      standardErrorPath: options.standardErrorPath,
+      workingDirectory: options.workingDirectory,
+      environment: options.environment,
     );
 
     try {
@@ -109,7 +122,49 @@ final class MacosAutostartBackend implements AutostartBackend {
             'could not be cleared',
       );
     }
+
+    if (options.activateImmediately) _activate();
   }
+
+  /// Starts the agent in the current session, replacing a job already loaded
+  /// under this label.
+  ///
+  /// The bootout comes first for two measured reasons: `launchctl bootstrap`
+  /// **fails** when the label is already loaded, which is the ordinary
+  /// repeat-`enable()` path; and a job loaded from an earlier `enable()` keeps
+  /// running the *old* configuration, so re-loading is what makes a changed
+  /// executable or argument list take effect now.
+  ///
+  /// Nothing here throws. Both commands report failure in situations that are
+  /// not failures at all (nothing was loaded; the session is not a GUI one),
+  /// and the registration this method follows has already succeeded — the agent
+  /// starts at the next login whatever happens here. [isRunningNow] is how a
+  /// caller learns the outcome.
+  void _activate() {
+    launchctl
+      ..bootout(config.label)
+      ..bootstrap(_plistFile.path);
+  }
+
+  /// Whether the agent is loaded into the **current** login session.
+  ///
+  /// Distinct from [isEnabled], which answers "will it start at the next
+  /// login". A caller that asked for [MacosAutostartOptions.activateImmediately]
+  /// uses this to find out whether starting it now actually worked — the outcome
+  /// `enable()` deliberately does not throw for.
+  ///
+  /// What it reports precisely is that launchd **has the job**, which is the
+  /// answer to "did activation take". It is not a liveness check on the
+  /// process: a program that has already run and exited leaves its job loaded,
+  /// so this stays true for a short-lived program that is no longer executing.
+  /// For the long-running daemons this option exists to serve the two coincide;
+  /// where they do not, the process's own health is the application's to
+  /// observe, not something launchd's registration can tell it.
+  ///
+  /// Read from launchd rather than remembered from the attempt, for the same
+  /// reason [isEnabled] reads the operating system rather than a stored
+  /// preference: the session can change without this package seeing it.
+  Future<bool> isRunningNow() async => launchctl.isLoaded(config.label);
 
   /// Removes this application's launch agent, if one is present.
   ///
@@ -132,6 +187,13 @@ final class MacosAutostartBackend implements AutostartBackend {
     final file = _plistFile;
     if (!file.existsSync()) return;
     if (!_isOurs(file)) return;
+
+    // Before the file goes: `launchctl bootout` names a job launchd resolved
+    // from this plist, so deleting it first would leave a running job with
+    // nothing to unload it by until the next login. The ownership guard above
+    // governs this too — booting out a label this application does not own
+    // would stop a third party's running agent.
+    if (options.activateImmediately) launchctl.bootout(config.label);
 
     try {
       file.deleteSync();

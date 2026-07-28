@@ -8,6 +8,7 @@ import 'backends/unsupported_backend.dart';
 import 'backends/windows/windows_autostart_backend.dart';
 import 'backends/windows/windows_run_key_backend.dart';
 import 'backends/windows/windows_task_scheduler_backend.dart';
+import 'macos_options.dart';
 import 'windows_options.dart';
 
 /// Registers a program to launch when the user logs in.
@@ -44,10 +45,12 @@ class Autostart {
   factory Autostart.forCurrentPlatform(
     AutostartConfig config, {
     WindowsAutostartOptions windows = const WindowsAutostartOptions(),
+    MacosAutostartOptions macos = const MacosAutostartOptions(),
   }) => Autostart.forOperatingSystem(
     config,
     Platform.operatingSystem,
     windows: windows,
+    macos: macos,
   );
 
   /// Builds the instance for a named [operatingSystem].
@@ -67,7 +70,10 @@ class Autostart {
     AutostartConfig config,
     String operatingSystem, {
     WindowsAutostartOptions windows = const WindowsAutostartOptions(),
-  }) => Autostart.withBackend(_backendFor(config, operatingSystem, windows));
+    MacosAutostartOptions macos = const MacosAutostartOptions(),
+  }) => Autostart.withBackend(
+    _backendFor(config, operatingSystem, windows, macos),
+  );
 
   /// The platform backend this instance delegates to.
   ///
@@ -90,14 +96,23 @@ AutostartBackend _backendFor(
   AutostartConfig config,
   String operatingSystem,
   WindowsAutostartOptions windows,
+  MacosAutostartOptions macos,
 ) {
   return switch (resolveAutostartPlatform(operatingSystem)) {
     AutostartPlatform.windows => _windowsBackend(config, windows),
-    AutostartPlatform.macos => MacosAutostartBackend(config: config),
+    AutostartPlatform.macos => _macosBackend(config, macos),
     AutostartPlatform.unsupported => UnsupportedPlatformBackend(
       operatingSystem,
     ),
   };
+}
+
+AutostartBackend _macosBackend(
+  AutostartConfig config,
+  MacosAutostartOptions macos,
+) {
+  macos.validate();
+  return MacosAutostartBackend(config: config, options: macos);
 }
 
 AutostartBackend _windowsBackend(

@@ -27,6 +27,28 @@ abstract interface class Launchctl {
   /// Measured to succeed for an unprivileged user in their own GUI domain on
   /// macOS 14.5; see `docs/agents/theflow.md`.
   bool clearOverride(String label);
+
+  /// Loads the agent at [plistPath] into the current GUI session
+  /// (`launchctl bootstrap`), so it starts now rather than at the next login.
+  ///
+  /// The returned value is the command's own report and is **not** a reliable
+  /// answer on its own: bootstrapping an agent that is already loaded fails
+  /// (measured: exit 5, `Bootstrap failed: 5: Input/output error`), which is
+  /// the ordinary repeat-`enable()` path. Ask [isLoaded] for the truth.
+  bool bootstrap(String plistPath);
+
+  /// Removes [label] from the current GUI session (`launchctl bootout`).
+  ///
+  /// Same caveat as [bootstrap]: booting out an agent that is not loaded fails
+  /// (measured: exit 3, `Boot-out failed: 3: No such process`), which is the
+  /// ordinary repeat-`disable()` path rather than an error.
+  bool bootout(String label);
+
+  /// Whether [label] is currently loaded in the GUI session.
+  ///
+  /// This is the state the two commands above cannot be trusted to report, so
+  /// it is what the backend answers callers with.
+  bool isLoaded(String label);
 }
 
 /// The real `launchctl`, driven with `dart:io` — no native code.
@@ -46,6 +68,27 @@ final class SystemLaunchctl implements Launchctl {
     final domain = _guiDomain();
     if (domain == null) return false;
     return _run(['enable', '$domain/$label']) != null;
+  }
+
+  @override
+  bool bootstrap(String plistPath) {
+    final domain = _guiDomain();
+    if (domain == null) return false;
+    return _run(['bootstrap', domain, plistPath]) != null;
+  }
+
+  @override
+  bool bootout(String label) {
+    final domain = _guiDomain();
+    if (domain == null) return false;
+    return _run(['bootout', '$domain/$label']) != null;
+  }
+
+  @override
+  bool isLoaded(String label) {
+    final domain = _guiDomain();
+    if (domain == null) return false;
+    return _run(['print', '$domain/$label']) != null;
   }
 
   /// `gui/<uid>`, or `null` if the uid could not be resolved.

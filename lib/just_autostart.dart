@@ -18,6 +18,12 @@ export 'src/autostart.dart';
 export 'src/autostart_backend.dart';
 export 'src/autostart_config.dart';
 export 'src/autostart_platform.dart';
+// The macOS backend is exported where the Windows ones are not, because it
+// carries one operation the cross-platform surface cannot: `isRunningNow()`,
+// which reports whether immediate activation actually started the agent. A
+// caller who asked for that has no other way to reach the answer.
+export 'src/backends/macos/macos_autostart_backend.dart';
 export 'src/backends/unsupported_backend.dart';
 export 'src/exceptions.dart';
+export 'src/macos_options.dart';
 export 'src/windows_options.dart';

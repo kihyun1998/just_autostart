@@ -214,6 +214,34 @@ Add to this list when a pass finds another.
   not an ownership signal, even though the label doubles as the file name.
 - The **label doubles as the plist filename**, so a path separator in it is a
   deletion hazard — validated in `AutostartConfig`, not in one backend.
+- **`launchctl bootstrap` and `bootout` report failure on their own happy
+  paths.** Measured on macOS 14.5 (#10): bootstrapping a label that is **already
+  loaded** fails with exit **5** (`Bootstrap failed: 5: Input/output error`) —
+  which is the ordinary repeat-`enable()` path; booting out a label that is
+  **not** loaded fails with exit **3** (`Boot-out failed: 3: No such process`) —
+  the ordinary repeat-`disable()` path. So **"exit code ≠ 0" is not a failure
+  report** here; treating it as one cries wolf on the normal flow. The state is
+  read separately with `launchctl print gui/<uid>/<label>` (exit 0 = loaded),
+  which is what `isRunningNow()` answers from. Same shape as the #9 rule: do not
+  trust a command's self-report, re-measure the state.
+  - Consequence: `enable()` with immediate activation **boots out before
+    bootstrapping**, which both avoids the already-loaded failure and makes a
+    changed configuration take effect instead of leaving the old job running.
+  - `bootstrap` accepts a plist **outside** `~/Library/LaunchAgents` (measured
+    from a temp dir, exit 0), which is why the directory seam is testable.
+- **launchd resolves a relative path against its own working directory, not the
+  caller's.** `WorkingDirectory` is a `chdir(2)` and the `StandardOutPath` /
+  `StandardErrorPath` files are opened by launchd itself (`launchd.plist(5)`),
+  in a process the calling application has no relationship to. So a relative
+  path is *accepted* and silently points somewhere unpredictable — the
+  silent-drop shape of lessons #20, not an impossible value. `MacosAutostartOptions`
+  refuses relative paths for all three (#10).
+- **A caller-supplied name can impersonate a top-level plist key.**
+  `EnvironmentVariables` is a nested dict whose `<key>` elements are *caller
+  data*, so a document-wide scan reads `environment: {'Label': …}` as the
+  agent's own `Label` — and `disable()` decides ownership by that value, so a
+  foreign agent carrying such a variable could be deleted (#10, reproduced).
+  Top-level keys are read only at nesting depth one.
 - **A file that exists is not a file that launches.** `File.existsSync()` is
   `true` for a path with no execute bit, but launchd's `execvp` fails at login
   with `EACCES` and nothing starts — reproduced on macOS (a `chmod 644` file:
@@ -421,9 +449,12 @@ dart test
 - **Convention:** ticket → implement → `/code-review` → commit referencing the
   issue (`Closes #n`) → fast-forward merge to `main` → push → confirm CI green.
   No PR flow; this is a solo repo and a PR per ticket was weighed and declined.
-- **Release:** `dart pub publish --dry-run` must be **0 warnings**. Currently
-  blocked on a missing `LICENSE`. `dart pub publish` is irreversible — **the
-  agent does not run it; the user does.**
+- **Release:** `dart pub publish --dry-run` must be **0 warnings**. The missing
+  `LICENSE` that blocked this is **fixed** — the file is in the archive
+  (verified #10). The remaining dry-run warning is only ever "uncommitted
+  changes", which clears once the work is committed, so run the dry run *after*
+  committing or it reports a state you are about to leave. `dart pub publish` is
+  irreversible — **the agent does not run it; the user does.**
 
 ## War-story index
 

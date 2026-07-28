@@ -62,6 +62,23 @@ Unreleased.
 - `disable()` on macOS removes a plist only when its internal `Label` is this
   application's — launchd identifies a job by that label, not by the file name,
   so a third party's agent that merely shares the file name is left untouched.
+- `MacosAutostartOptions` configures **how** launchd runs the agent: restart on
+  exit (`keepAlive`), standard output and error paths, a working directory, and
+  environment variables. A login agent inherits none of a login shell's
+  environment and has no terminal attached, so a daemon that behaves differently
+  at login than by hand — or that fails invisibly — usually needs these. Each is
+  written to the plist **only when supplied**, so a caller who configures
+  nothing gets the same minimal agent as before and launchd applies its own
+  defaults.
+- `activateImmediately` starts the agent in the **current** session on
+  `enable()`, for a user who has just switched a toggle on and expects it to
+  work now. `disable()` removes it from the session before deleting the plist.
+  A failure to start it now does **not** throw: the registration is written and
+  the agent starts at the next login regardless. `isRunningNow()` reports
+  whether it is actually running, read from launchd rather than remembered —
+  the exit codes cannot be trusted for this, because `launchctl` fails both when
+  bootstrapping an already-loaded agent and when booting out one that is not
+  loaded, which are the ordinary repeat paths.
 - `ExecutablePermissionException` reports an executable that exists but has no
   execute bit — it would pass an existence check and then fail to launch at
   login. `MalformedRegistrationException` reports a plist too corrupt to read

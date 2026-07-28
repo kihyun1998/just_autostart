@@ -657,3 +657,33 @@ in the same repository, three tickets later.
 **Consequence:** the comment states both halves and names the measurement that
 bounds the untestable one. `current_user_test.dart` covers the comparison
 directly, which is the part a single account *can* prove.
+
+## #25 — the completeness lens that sat for two hours on a permission prompt — Step 5
+
+**Rule it proves:** a measurement that **changes machine state** is not
+delegable. The main thread runs it, because only the main thread can be granted
+the permission.
+
+The Step 5 lens for #10 was briefed to verify `launchctl bootstrap` / `bootout`
+semantics against the real command — the right question, handed to the wrong
+place. Its last output before it was killed:
+
+```
+Now Corpus 2 — the real launchd reference. I'm on macOS, so I can measure directly.
+```
+
+It then stopped for **two hours**. `bootstrap` and `bootout` mutate the user's
+live login session, so they need approval, and a background agent cannot answer
+that prompt for itself. The read-only half of the brief (man pages, repo files)
+had already completed; only the mutating half hung.
+
+Running the same probe from the main thread took one command and answered
+everything the lens was blocked on — including the finding that decided the
+design: both commands **fail on their own happy paths** (exit 5 when already
+loaded, exit 3 when not loaded), so an exit code cannot be the outcome report.
+
+**Consequence:** a lens is briefed to read — sources, files, man pages — and to
+*name* the runtime facts it needs. Measuring them is the main thread's job, and
+the measurement is recorded in the issue where the lens's convergence claim can
+rest on it. The split is not "who is capable" but "who can be granted
+permission".

@@ -11,3 +11,17 @@ bool listEquals<T>(List<T> a, List<T> b) {
   }
   return true;
 }
+
+/// Whether [a] and [b] hold the same keys mapped to the same values.
+///
+/// Order is not part of a map's identity, so this compares by lookup rather
+/// than by iteration order. Same reasoning as [listEquals] for why it is
+/// hand-rolled.
+bool mapEquals<K, V>(Map<K, V> a, Map<K, V> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (final entry in a.entries) {
+    if (!b.containsKey(entry.key) || b[entry.key] != entry.value) return false;
+  }
+  return true;
+}

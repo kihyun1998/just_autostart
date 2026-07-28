@@ -1,4 +1,3 @@
-import 'package:just_autostart/src/backends/macos/macos_autostart_backend.dart';
 import 'package:just_autostart/src/backends/windows/windows_autostart_backend.dart';
 import 'package:just_autostart/src/backends/windows/windows_run_key_backend.dart';
 import 'package:just_autostart/src/backends/windows/windows_task_scheduler_backend.dart';
@@ -108,6 +107,46 @@ void main() {
       final autostart = Autostart.forOperatingSystem(_config(), 'macos');
 
       expect(autostart.backend, isA<MacosAutostartBackend>());
+    });
+
+    test('passes the macOS options to the backend', () {
+      // The assembly point: options that never reach the backend would leave a
+      // caller believing in a configuration the written plist does not carry.
+      final autostart = Autostart.forOperatingSystem(
+        _config(),
+        'macos',
+        macos: const MacosAutostartOptions(
+          keepAlive: true,
+          standardOutPath: '/tmp/out.log',
+        ),
+      );
+
+      final backend = autostart.backend as MacosAutostartBackend;
+      expect(backend.options.keepAlive, isTrue);
+      expect(backend.options.standardOutPath, '/tmp/out.log');
+    });
+
+    test('refuses macOS options it could not honour', () {
+      // A blank path would produce a plist launchd accepts and then behaves
+      // unpredictably with. Refused at construction, like the Windows side.
+      expect(
+        () => Autostart.forOperatingSystem(
+          _config(),
+          'macos',
+          macos: const MacosAutostartOptions(standardOutPath: '   '),
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test('ignores the macOS options on another platform', () {
+      final autostart = Autostart.forOperatingSystem(
+        _config(),
+        'linux',
+        macos: const MacosAutostartOptions(keepAlive: true),
+      );
+
+      expect(autostart.backend, isA<UnsupportedPlatformBackend>());
     });
 
     test('builds a backend for every operating system it is given', () {

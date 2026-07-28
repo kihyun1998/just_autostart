@@ -6,7 +6,6 @@ import 'dart:io';
 import 'package:just_autostart/just_autostart.dart';
 import 'package:just_autostart/src/backends/macos/launch_agent_plist.dart';
 import 'package:just_autostart/src/backends/macos/launchctl.dart';
-import 'package:just_autostart/src/backends/macos/macos_autostart_backend.dart';
 import 'package:test/test.dart';
 
 /// A launchd override store that never touches the machine.
@@ -30,6 +29,40 @@ final class FakeLaunchctl implements Launchctl {
   final bool clearSucceeds;
 
   final List<String> clearCalls = [];
+
+  /// Every session command in the order it was issued, so a test can pin the
+  /// ordering `disable()` depends on.
+  final List<String> sessionCalls = [];
+
+  /// Whether a bootstrap is allowed to succeed.
+  bool bootstrapSucceeds = true;
+
+  /// Whether the agent is currently loaded into the session.
+  bool loaded = false;
+
+  /// Run when `bootout` is called, so a test can observe the state at that
+  /// moment — the plist must still exist when the agent is booted out.
+  void Function()? onBootout;
+
+  @override
+  bool bootstrap(String plistPath) {
+    sessionCalls.add('bootstrap:$plistPath');
+    if (!bootstrapSucceeds) return false;
+    loaded = true;
+    return true;
+  }
+
+  @override
+  bool bootout(String label) {
+    sessionCalls.add('bootout:$label');
+    onBootout?.call();
+    if (!loaded) return false;
+    loaded = false;
+    return true;
+  }
+
+  @override
+  bool isLoaded(String label) => loaded;
 
   @override
   String? readDisabledOverrides() {
@@ -178,6 +211,79 @@ void main() {
       final b = backend(directory: Directory('${blocker.path}/nested'));
 
       expect(() => b.enable(), throwsA(isA<AutostartOsException>()));
+    });
+  });
+
+  group('optional agent configuration', () {
+    test('reaches the written file only when configured', () async {
+      await MacosAutostartBackend(
+        config: config(),
+        launchAgentsDirectory: scratch,
+        launchctl: FakeLaunchctl(),
+        options: const MacosAutostartOptions(
+          keepAlive: true,
+          standardOutPath: '/tmp/out.log',
+          standardErrorPath: '/tmp/err.log',
+          workingDirectory: '/tmp',
+          environment: {'MODE': 'daemon'},
+        ),
+      ).enable();
+
+      final parsed = parseLaunchAgentPlist(
+        plistFile('dev.justautostart.test').readAsStringSync(),
+      );
+      expect(parsed.keepAlive, isTrue);
+      expect(parsed.standardOutPath, '/tmp/out.log');
+      expect(parsed.standardErrorPath, '/tmp/err.log');
+      expect(parsed.workingDirectory, '/tmp');
+      expect(parsed.environment, {'MODE': 'daemon'});
+    });
+
+    test('a caller who configures nothing gets the minimal agent', () async {
+      await backend().enable();
+
+      final xml = plistFile('dev.justautostart.test').readAsStringSync();
+      expect(xml, isNot(contains('KeepAlive')));
+      expect(xml, isNot(contains('StandardOutPath')));
+      expect(xml, isNot(contains('StandardErrorPath')));
+      expect(xml, isNot(contains('WorkingDirectory')));
+      expect(xml, isNot(contains('EnvironmentVariables')));
+    });
+
+    test('a fully configured plist is still one Apple accepts', () async {
+      await MacosAutostartBackend(
+        config: config(),
+        launchAgentsDirectory: scratch,
+        launchctl: FakeLaunchctl(),
+        options: const MacosAutostartOptions(
+          keepAlive: true,
+          standardOutPath: '/tmp/out & log.txt',
+          workingDirectory: '/opt/My Tools & <x>',
+          environment: {'A&B': '<v>'},
+        ),
+      ).enable();
+
+      // Our writer agreeing with our reader proves nothing about launchd.
+      final lint = Process.runSync('plutil', [
+        '-lint',
+        plistFile('dev.justautostart.test').path,
+      ]);
+      expect(lint.exitCode, 0, reason: '${lint.stdout}${lint.stderr}');
+    });
+
+    test('isEnabled ignores optional keys it was not configured with', () async {
+      // The optional settings describe *how* the agent runs, not *what* is
+      // registered, so a registration that differs only there is still ours and
+      // still enabled. Only the executable, arguments, and the enablement
+      // stores decide.
+      await MacosAutostartBackend(
+        config: config(),
+        launchAgentsDirectory: scratch,
+        launchctl: FakeLaunchctl(),
+        options: const MacosAutostartOptions(keepAlive: true),
+      ).enable();
+
+      expect(await backend().isEnabled(), isTrue);
     });
   });
 
@@ -428,6 +534,122 @@ void main() {
     });
   });
 
+  group('immediate activation', () {
+    const label = 'dev.justautostart.test';
+
+    MacosAutostartBackend activating(FakeLaunchctl launchctl) =>
+        MacosAutostartBackend(
+          config: config(),
+          launchAgentsDirectory: scratch,
+          launchctl: launchctl,
+          options: const MacosAutostartOptions(activateImmediately: true),
+        );
+
+    test('enable bootstraps the agent into the current session', () async {
+      final launchctl = FakeLaunchctl();
+      final b = activating(launchctl);
+
+      await b.enable();
+
+      expect(
+        launchctl.sessionCalls,
+        contains('bootstrap:${plistFile(label).path}'),
+      );
+      expect(await b.isRunningNow(), isTrue);
+    });
+
+    test('enable does not touch the session without the option', () async {
+      final launchctl = FakeLaunchctl();
+
+      await backend(launchctl: launchctl).enable();
+
+      expect(launchctl.sessionCalls, isEmpty);
+    });
+
+    test('a failed bootstrap does not throw, and is reported', () async {
+      // The plist is written and the agent will start at the next login, so a
+      // failure to start it *now* is a partial success, not an error. Turning
+      // it into an exception would tell the caller something false.
+      final launchctl = FakeLaunchctl()..bootstrapSucceeds = false;
+      final b = activating(launchctl);
+
+      await b.enable();
+
+      expect(plistFile(label).existsSync(), isTrue);
+      expect(await b.isEnabled(), isTrue);
+      // ...but the caller can still find out that it is not running yet.
+      expect(await b.isRunningNow(), isFalse);
+    });
+
+    test('enabling twice reloads rather than failing', () async {
+      // Measured: `launchctl bootstrap` on an already-loaded agent fails, so a
+      // second enable() has to boot the old job out first. That also makes a
+      // changed configuration take effect, instead of leaving the previously
+      // loaded job running.
+      final launchctl = FakeLaunchctl();
+      final b = activating(launchctl);
+
+      await b.enable();
+      launchctl.sessionCalls.clear();
+      await b.enable();
+
+      expect(launchctl.sessionCalls, [
+        'bootout:$label',
+        'bootstrap:${plistFile(label).path}',
+      ]);
+      expect(await b.isRunningNow(), isTrue);
+    });
+
+    test('disable boots the agent out before deleting the plist', () async {
+      // Order matters: `launchctl bootout` names a job launchd resolved from
+      // the file, so removing the file first would leave the job loaded with
+      // nothing to unload it by.
+      final launchctl = FakeLaunchctl();
+      final b = activating(launchctl);
+      await b.enable();
+
+      var plistExistedAtBootout = false;
+      launchctl.onBootout = () {
+        plistExistedAtBootout = plistFile(label).existsSync();
+      };
+
+      await b.disable();
+
+      expect(plistExistedAtBootout, isTrue);
+      expect(plistFile(label).existsSync(), isFalse);
+      expect(await b.isRunningNow(), isFalse);
+    });
+
+    test('disable is still a no-op when nothing is loaded', () async {
+      // Measured: booting out an agent that is not loaded fails with "No such
+      // process". That is the ordinary repeat-disable path, not an error.
+      final launchctl = FakeLaunchctl();
+      final b = activating(launchctl);
+
+      await b.disable();
+
+      expect(launchctl.sessionCalls, isEmpty);
+    });
+
+    test('disable leaves a foreign agent, and its session, alone', () async {
+      // The ownership guard governs the session command too: booting out a
+      // label we do not own would stop a third party's running agent.
+      final launchctl = FakeLaunchctl()..loaded = true;
+      plistFile(label).writeAsStringSync(
+        generateLaunchAgentPlist(
+          label: 'com.vendorx.updater',
+          executablePath: realExecutable,
+          args: const [],
+        ),
+      );
+
+      await activating(launchctl).disable();
+
+      expect(launchctl.sessionCalls, isEmpty);
+      expect(plistFile(label).existsSync(), isTrue);
+    });
+  });
+
   group('against the real launchctl', () {
     test('reads the real override roster, or degrades, without throwing', () {
       // The one integration test the ticket asks for: the real
@@ -448,6 +670,65 @@ void main() {
         overrides == null || overrides.contains('disabled services'),
         isTrue,
       );
+    });
+
+    test('a bootstrap that cannot succeed reports false, never throws', () {
+      // The failed-activation path against the real command. A plist that is
+      // not there cannot be loaded, and `launchctl` says so by failing rather
+      // than by crashing us.
+      expect(
+        const SystemLaunchctl().bootstrap('/no/such/agent.plist'),
+        isFalse,
+      );
+    });
+
+    test('isLoaded is false for a label nothing registered', () {
+      expect(
+        const SystemLaunchctl().isLoaded('dev.justautostart.never.registered'),
+        isFalse,
+      );
+    });
+
+    test('activates and deactivates a real agent in this session', () async {
+      // The one test that drives the real session. `/usr/bin/true` exits
+      // immediately and takes no arguments, so loading it starts nothing that
+      // outlives the test; the plist lives in the scratch directory; and the
+      // agent is booted out again below — and once more in tearDown, so a
+      // failure part-way through still leaves no session registration behind.
+      const activationLabel = 'dev.justautostart.activation.test';
+      final b = MacosAutostartBackend(
+        config: AutostartConfig(
+          appName: 'JustAutostartActivationTest',
+          label: activationLabel,
+          executablePath: '/usr/bin/true',
+        ),
+        launchAgentsDirectory: scratch,
+        options: const MacosAutostartOptions(activateImmediately: true),
+      );
+
+      addTearDown(() => const SystemLaunchctl().bootout(activationLabel));
+
+      await b.enable();
+
+      // On a runner with no GUI domain the bootstrap cannot work, and the
+      // contract is that this is still not a failure — the agent is registered
+      // and starts at the next login. Assert whichever of the two holds, and
+      // that `enable()` did not throw either way.
+      expect(
+        File('${scratch.path}/$activationLabel.plist').existsSync(),
+        isTrue,
+      );
+      final runningInSession = await b.isRunningNow();
+
+      await b.disable();
+
+      expect(await b.isRunningNow(), isFalse);
+      expect(
+        File('${scratch.path}/$activationLabel.plist').existsSync(),
+        isFalse,
+      );
+      // Recorded rather than asserted: which branch the machine took.
+      printOnFailure('bootstrapped into this session: $runningInSession');
     });
   });
 }

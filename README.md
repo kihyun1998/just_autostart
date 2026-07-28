@@ -114,6 +114,45 @@ await autostart.isEnabled();
 await autostart.disable();
 ```
 
+### Configuring the macOS agent
+
+A program launchd starts at login has **no terminal attached and none of a login
+shell's environment**, which is why a daemon can behave differently there than
+it does when you run it by hand — and why a failure to start leaves no trace.
+`MacosAutostartOptions` covers that, and can start the agent immediately instead
+of at the next login:
+
+```dart
+final autostart = Autostart.forCurrentPlatform(
+  config,
+  macos: const MacosAutostartOptions(
+    keepAlive: true,                        // launchd restarts it if it exits
+    standardOutPath: '/Users/me/Library/Logs/mytool.out',
+    standardErrorPath: '/Users/me/Library/Logs/mytool.err',
+    workingDirectory: '/Users/me',
+    environment: {'MY_TOOL_MODE': 'daemon'},
+    activateImmediately: true,              // start it now, not at next login
+  ),
+);
+```
+
+Every one of these is written to the agent **only when you supply it**, so the
+default keeps producing a minimal agent and launchd applies its own defaults.
+
+`activateImmediately` is best-effort by design: `enable()` writes the
+registration first, so the agent starts at the next login whether or not it
+could also be started right now. That means a failure to start it *now* is not
+an error and is not thrown. Ask for it directly instead:
+
+```dart
+await autostart.enable();
+
+final backend = autostart.backend as MacosAutostartBackend;
+if (!await backend.isRunningNow()) {
+  // Registered and will start at the next login — just not running yet.
+}
+```
+
 ### You supply the executable path
 
 `executablePath` is required and is never inferred. `Platform.resolvedExecutable`

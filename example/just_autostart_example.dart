@@ -43,6 +43,31 @@ Future<void> main() async {
       ),
     ),
   );
+
+  // On macOS the optional settings describe how launchd should run the agent.
+  // A program started at login has no terminal and none of a login shell's
+  // environment, so a daemon usually wants at least the log paths.
+  final macos = Autostart.forCurrentPlatform(
+    config,
+    macos: const MacosAutostartOptions(
+      keepAlive: true,
+      standardOutPath: '/tmp/mytool.out',
+      standardErrorPath: '/tmp/mytool.err',
+      activateImmediately: true,
+    ),
+  );
+  await report('launchd agent', macos);
+
+  // `activateImmediately` is best-effort: the registration is written first, so
+  // the agent starts at the next login whether or not it could also be started
+  // right now. That outcome is asked for, not thrown.
+  final backend = macos.backend;
+  if (backend is MacosAutostartBackend) {
+    stdout.writeln(
+      'launchd agent — running in this session: '
+      '${await backend.isRunningNow()}',
+    );
+  }
 }
 
 /// Prints what [autostart] currently reports, or why it cannot answer.

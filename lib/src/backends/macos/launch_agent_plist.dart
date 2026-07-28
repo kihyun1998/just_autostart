@@ -15,6 +15,11 @@ final class LaunchAgentPlist {
     required this.args,
     required this.runAtLoad,
     required this.disabled,
+    this.keepAlive,
+    this.standardOutPath,
+    this.standardErrorPath,
+    this.workingDirectory,
+    this.environment = const {},
   });
 
   /// The launchd job label, which also names the file on disk.
@@ -40,6 +45,26 @@ final class LaunchAgentPlist {
   /// which live outside the plist.
   final bool disabled;
 
+  /// Whether launchd restarts the program when it exits, or `null` when the
+  /// key is absent and launchd's own default (do not restart) applies.
+  ///
+  /// Nullable rather than defaulted, because "the caller said false" and "the
+  /// caller said nothing" are different registrations: the first writes the key
+  /// and the second leaves launchd to decide.
+  final bool? keepAlive;
+
+  /// Where the program's standard output is written, or `null` when unset.
+  final String? standardOutPath;
+
+  /// Where the program's standard error is written, or `null` when unset.
+  final String? standardErrorPath;
+
+  /// The directory launchd changes to before running the program, or `null`.
+  final String? workingDirectory;
+
+  /// Environment variables set for the launched process; empty when unset.
+  final Map<String, String> environment;
+
   @override
   bool operator ==(Object other) =>
       other is LaunchAgentPlist &&
@@ -47,7 +72,12 @@ final class LaunchAgentPlist {
       other.executablePath == executablePath &&
       listEquals(other.args, args) &&
       other.runAtLoad == runAtLoad &&
-      other.disabled == disabled;
+      other.disabled == disabled &&
+      other.keepAlive == keepAlive &&
+      other.standardOutPath == standardOutPath &&
+      other.standardErrorPath == standardErrorPath &&
+      other.workingDirectory == workingDirectory &&
+      mapEquals(other.environment, environment);
 
   @override
   int get hashCode => Object.hash(
@@ -56,12 +86,20 @@ final class LaunchAgentPlist {
     Object.hashAll(args),
     runAtLoad,
     disabled,
+    keepAlive,
+    standardOutPath,
+    standardErrorPath,
+    workingDirectory,
+    Object.hashAllUnordered(environment.keys),
   );
 
   @override
   String toString() =>
       'LaunchAgentPlist(label: $label, executablePath: $executablePath, '
-      'args: $args, runAtLoad: $runAtLoad, disabled: $disabled)';
+      'args: $args, runAtLoad: $runAtLoad, disabled: $disabled, '
+      'keepAlive: $keepAlive, standardOutPath: $standardOutPath, '
+      'standardErrorPath: $standardErrorPath, '
+      'workingDirectory: $workingDirectory, environment: $environment)';
 }
 
 /// Builds the launchd user-agent plist that starts [executablePath] at login.
@@ -80,6 +118,11 @@ String generateLaunchAgentPlist({
   required String executablePath,
   required List<String> args,
   bool runAtLoad = true,
+  bool? keepAlive,
+  String? standardOutPath,
+  String? standardErrorPath,
+  String? workingDirectory,
+  Map<String, String> environment = const {},
 }) {
   final buffer = StringBuffer()
     ..writeln('<?xml version="1.0" encoding="UTF-8"?>')
@@ -100,7 +143,45 @@ String generateLaunchAgentPlist({
   buffer
     ..writeln('\t</array>')
     ..writeln('\t<key>RunAtLoad</key>')
-    ..writeln('\t${runAtLoad ? '<true/>' : '<false/>'}')
+    ..writeln('\t${runAtLoad ? '<true/>' : '<false/>'}');
+
+  // Every optional key is emitted only when the caller supplied it, so a
+  // caller who configures nothing gets the same minimal agent as before and
+  // launchd applies its own defaults rather than ours.
+  if (keepAlive != null) {
+    buffer
+      ..writeln('\t<key>KeepAlive</key>')
+      ..writeln('\t${keepAlive ? '<true/>' : '<false/>'}');
+  }
+  if (standardOutPath != null) {
+    buffer
+      ..writeln('\t<key>StandardOutPath</key>')
+      ..writeln('\t<string>${_escape(standardOutPath)}</string>');
+  }
+  if (standardErrorPath != null) {
+    buffer
+      ..writeln('\t<key>StandardErrorPath</key>')
+      ..writeln('\t<string>${_escape(standardErrorPath)}</string>');
+  }
+  if (workingDirectory != null) {
+    buffer
+      ..writeln('\t<key>WorkingDirectory</key>')
+      ..writeln('\t<string>${_escape(workingDirectory)}</string>');
+  }
+  if (environment.isNotEmpty) {
+    buffer
+      ..writeln('\t<key>EnvironmentVariables</key>')
+      ..writeln('\t<dict>');
+    for (final entry in environment.entries) {
+      // A variable's name is caller data too, so both halves are escaped.
+      buffer
+        ..writeln('\t\t<key>${_escape(entry.key)}</key>')
+        ..writeln('\t\t<string>${_escape(entry.value)}</string>');
+    }
+    buffer.writeln('\t</dict>');
+  }
+
+  buffer
     ..writeln('</dict>')
     ..writeln('</plist>');
   return buffer.toString();
@@ -127,8 +208,16 @@ LaunchAgentPlist parseLaunchAgentPlist(String xml) {
   // read the wrong element out of a hand-edited plist.
   final body = xml.replaceAll(RegExp('<!--.*?-->', dotAll: true), '');
 
-  final label = _stringForKey(body, 'Label');
-  final program = _stringArrayForKey(body, 'ProgramArguments');
+  // Top-level keys are read from the outer dict's *own* entries. A nested dict
+  // — `EnvironmentVariables` is one — holds caller-supplied names in `<key>`
+  // elements, and scanning the whole document would let a variable called
+  // `Label` or `StandardOutPath` shadow the real key. `Label` is the dangerous
+  // one: `disable()` decides whether a plist belongs to this application by
+  // that value.
+  final top = _topLevelDictBody(body);
+
+  final label = _stringForKey(top, 'Label');
+  final program = _stringArrayForKey(top, 'ProgramArguments');
 
   if (label == null) {
     throw const MalformedRegistrationException('no Label string');
@@ -146,9 +235,58 @@ LaunchAgentPlist parseLaunchAgentPlist(String xml) {
     label: label,
     executablePath: program.first,
     args: List.unmodifiable(program.skip(1)),
-    runAtLoad: _boolForKey(body, 'RunAtLoad'),
-    disabled: _boolForKey(body, 'Disabled'),
+    runAtLoad: _boolForKey(top, 'RunAtLoad'),
+    disabled: _boolForKey(top, 'Disabled'),
+    keepAlive: _optionalBoolForKey(top, 'KeepAlive'),
+    standardOutPath: _stringForKey(top, 'StandardOutPath'),
+    standardErrorPath: _stringForKey(top, 'StandardErrorPath'),
+    workingDirectory: _stringForKey(top, 'WorkingDirectory'),
+    environment: Map.unmodifiable(
+      _stringDictForKey(body, 'EnvironmentVariables') ?? const {},
+    ),
   );
+}
+
+/// The outer `<dict>`'s own entries, with every nested dict's contents removed.
+///
+/// A plain scan for `<key>NAME</key>` cannot tell a top-level key from one
+/// inside `EnvironmentVariables`, whose names come from the caller. Keeping only
+/// what sits at nesting depth one makes "top-level key" mean what it says, so a
+/// variable cannot impersonate `Label`, `StandardOutPath`, or any other key the
+/// backend acts on.
+///
+/// Depth is counted rather than matched by regex because the nesting is
+/// arbitrary in a plist this package did not write. A self-closing `<dict/>`
+/// opens and closes at once and so changes nothing.
+String _topLevelDictBody(String xml) {
+  const open = '<dict>';
+  const close = '</dict>';
+  const empty = '<dict/>';
+
+  final buffer = StringBuffer();
+  var depth = 0;
+  var i = 0;
+
+  while (i < xml.length) {
+    if (xml.startsWith(empty, i)) {
+      i += empty.length;
+      continue;
+    }
+    if (xml.startsWith(open, i)) {
+      depth++;
+      i += open.length;
+      continue;
+    }
+    if (xml.startsWith(close, i)) {
+      depth--;
+      i += close.length;
+      continue;
+    }
+    if (depth == 1) buffer.write(xml[i]);
+    i++;
+  }
+
+  return buffer.toString();
 }
 
 /// Finds `<key>NAME</key>` and returns the `<string>` that follows it.
@@ -195,12 +333,46 @@ List<String>? _stringArrayForKey(String xml, String key) {
 /// A missing key, or `<false/>`, is `false` — which matches launchd's default
 /// for both `RunAtLoad` and `Disabled`. A repeated key resolves to the last
 /// occurrence (see [_stringForKey]).
-bool _boolForKey(String xml, String key) {
+bool _boolForKey(String xml, String key) =>
+    _optionalBoolForKey(xml, key) ?? false;
+
+/// Reads a boolean-valued key, distinguishing absent (`null`) from `<false/>`.
+///
+/// The distinction matters for keys where launchd's own default is not the same
+/// as an explicit false — and, more simply, because writing back what was read
+/// has to reproduce the original document.
+bool? _optionalBoolForKey(String xml, String key) {
   final matches = RegExp(
     '<key>\\s*${RegExp.escape(key)}\\s*</key>\\s*<(true|false)\\s*/>',
     dotAll: true,
   ).allMatches(xml);
-  return matches.isNotEmpty && matches.last.group(1) == 'true';
+  if (matches.isEmpty) return null;
+  return matches.last.group(1) == 'true';
+}
+
+/// Finds `<key>NAME</key>` and returns the `<key>`/`<string>` pairs inside the
+/// `<dict>` that follows it, or `null` when the pair is not present.
+///
+/// Only string-valued entries are read: that is what this package writes, and a
+/// foreign entry of another type is skipped rather than making the whole plist
+/// unreadable. A repeated key resolves to the last occurrence (see
+/// [_stringForKey]).
+Map<String, String>? _stringDictForKey(String xml, String key) {
+  final dictMatches = RegExp(
+    '<key>\\s*${RegExp.escape(key)}\\s*</key>\\s*<dict>(.*?)</dict>',
+    dotAll: true,
+  ).allMatches(xml);
+  if (dictMatches.isEmpty) return null;
+
+  final entries = <String, String>{};
+  final pairs = RegExp(
+    '<key>(.*?)</key>\\s*<string>(.*?)</string>',
+    dotAll: true,
+  ).allMatches(dictMatches.last.group(1)!);
+  for (final pair in pairs) {
+    entries[_unescape(pair.group(1)!)] = _unescape(pair.group(2)!);
+  }
+  return entries;
 }
 
 // Element content only needs `&`, `<`, and `>` escaped; quotes are literal
