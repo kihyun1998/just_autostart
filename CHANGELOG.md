@@ -40,4 +40,21 @@ Unreleased.
   is the current user. The Task Scheduler tree is machine-wide where the `Run`
   key is per-user, so two users of one installation would otherwise be
   indistinguishable by path alone.
-- macOS is not implemented yet and is served by the unsupported backend.
+- macOS autostart through a **launchd user agent** — a property list in the
+  user's `LaunchAgents` directory, written with `dart:io`. No FFI, no
+  dependency, and no `.app` bundle: `SMAppService` cannot register a bare
+  `dart compile exe` binary, so a LaunchAgent is the mechanism. Writing the file
+  is enough to start the program at the next login; launchd scans the directory
+  then.
+- `isEnabled()` on macOS reports what will *actually* launch, not merely that a
+  file exists: it reads the executable and arguments, `RunAtLoad`, and the
+  in-plist `Disabled` key — three stores inside the file, any of which can leave
+  a present plist inert. Honouring the user's System Settings Login-Items toggle,
+  which lives in a fourth store outside the plist, is not yet wired up.
+- `disable()` on macOS removes a plist only when its internal `Label` is this
+  application's — launchd identifies a job by that label, not by the file name,
+  so a third party's agent that merely shares the file name is left untouched.
+- `ExecutablePermissionException` reports an executable that exists but has no
+  execute bit — it would pass an existence check and then fail to launch at
+  login. `MalformedRegistrationException` reports a plist too corrupt to read
+  back.

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'autostart_backend.dart';
 import 'autostart_config.dart';
 import 'autostart_platform.dart';
+import 'backends/macos/macos_autostart_backend.dart';
 import 'backends/unsupported_backend.dart';
 import 'backends/windows/windows_autostart_backend.dart';
 import 'backends/windows/windows_run_key_backend.dart';
@@ -92,9 +93,10 @@ AutostartBackend _backendFor(
 ) {
   return switch (resolveAutostartPlatform(operatingSystem)) {
     AutostartPlatform.windows => _windowsBackend(config, windows),
-    // The macOS backend is not built yet.
-    AutostartPlatform.macos || AutostartPlatform.unsupported =>
-      UnsupportedPlatformBackend(operatingSystem),
+    AutostartPlatform.macos => MacosAutostartBackend(config: config),
+    AutostartPlatform.unsupported => UnsupportedPlatformBackend(
+      operatingSystem,
+    ),
   };
 }
 

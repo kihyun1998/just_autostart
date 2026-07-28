@@ -11,9 +11,8 @@ const executablePath = r'C:\Program Files\My Tool\mytool.exe';
 
 /// Reports what `just_autostart` would do on the platform this runs on.
 ///
-/// On Windows this reads the real registration state. On macOS — not yet
-/// implemented — and on every other platform it prints the failure from the
-/// unsupported backend.
+/// On Windows and macOS this reads the real registration state. On every other
+/// platform it prints the failure from the unsupported backend.
 ///
 /// It only *reads*: an example that registered itself at login would be a
 /// surprising thing to run.

@@ -1,3 +1,4 @@
+import 'package:just_autostart/src/backends/macos/macos_autostart_backend.dart';
 import 'package:just_autostart/src/backends/windows/windows_autostart_backend.dart';
 import 'package:just_autostart/src/backends/windows/windows_run_key_backend.dart';
 import 'package:just_autostart/src/backends/windows/windows_task_scheduler_backend.dart';
@@ -101,6 +102,12 @@ void main() {
           ),
         ),
       );
+    });
+
+    test('serves macOS with the launchd user-agent backend', () {
+      final autostart = Autostart.forOperatingSystem(_config(), 'macos');
+
+      expect(autostart.backend, isA<MacosAutostartBackend>());
     });
 
     test('builds a backend for every operating system it is given', () {

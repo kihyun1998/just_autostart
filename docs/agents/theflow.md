@@ -182,10 +182,35 @@ Add to this list when a pass finds another.
 
 **macOS**
 
-- launchd's **disable overrides live outside the plist**, in root-owned state.
-  Plist existence ≠ the agent will run.
+- launchd's **disable overrides live outside the plist**, in root-owned state
+  (`/var/db/com.apple.xpc.launchd/disabled.<UID>.plist`, read via `launchctl
+  print-disabled gui/<uid>`). Plist existence ≠ the agent will run. This is
+  **#9's** store; #8 does not read it.
+- **"How many stores does *this* surface have" — macOS has at least three**, the
+  lessons #17 shape landing again. Beyond the external override DB above, **two
+  more live *inside* the plist `isEnabled()` already parses** (verified against
+  `launchd.plist(5)`, #8): **`RunAtLoad`** — absent or `<false/>` means launchd
+  *loads* the job but does not *start* it at login, and the man-page default is
+  false, so a plist can name the right program and still never run; and the
+  **in-plist `Disabled` key** — `<true/>` suppresses the job independently of
+  everything else, distinct from the root-owned overrides. `isEnabled()` reads
+  ProgramArguments **and** both of these. The count is whatever the OS decided,
+  not "the one veto store I already knew about".
+- **launchd identifies a job by the internal `Label`, not the file name.** A
+  third party's plist can legally sit at `<our-label>.plist` while belonging to a
+  different agent (a different internal `Label`). Deleting on the file name alone
+  destroys it, unrecoverably — sacred-path #1. `disable()` guards by parsing the
+  file and matching the **internal** `Label` to ours; a foreign label or an
+  unparseable file is left in place (#8). This is why matching the *file name* is
+  not an ownership signal, even though the label doubles as the file name.
 - The **label doubles as the plist filename**, so a path separator in it is a
   deletion hazard — validated in `AutostartConfig`, not in one backend.
+- **A file that exists is not a file that launches.** `File.existsSync()` is
+  `true` for a path with no execute bit, but launchd's `execvp` fails at login
+  with `EACCES` and nothing starts — reproduced on macOS (a `chmod 644` file:
+  `existsSync` true, exec `errorCode=13`). Existence ≠ launchable, the same shape
+  as a stale path. (Whether `enable()` should reject a non-executable file is an
+  open #8 decision, surfaced to the maintainer.)
 - `SMAppService` registers the *enclosing `.app` bundle*. A bare Mach-O from
   `dart compile exe` has no bundle, so that API cannot serve this package's
   target — in any language. This is why the mechanism is a LaunchAgent.

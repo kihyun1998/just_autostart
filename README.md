@@ -7,14 +7,14 @@ where you open Xcode or hand-edit a Swift file.
 
 ## Status
 
-**Early, and Windows-only so far.** The cross-platform surface is stable enough
-to build against; macOS is next.
+**Early, but both platforms register.** The cross-platform surface is stable
+enough to build against.
 
 | Platform | Mechanism | State |
 | -------- | --------- | ----- |
 | Windows | Registry `Run` key | **Works** |
 | Windows | Task Scheduler (hidden window, delayed start) | **Works** |
-| macOS | launchd user agent | Not implemented yet |
+| macOS | launchd user agent | **Registers** — `enable`/`disable`/`isEnabled`. Honouring the user's Login Items toggle (System Settings) is not wired up yet, so `isEnabled()` does not yet reflect an agent switched off there. |
 | Everything else | — | Raises `UnsupportedPlatformException` |
 
 ## Choosing a Windows mechanism

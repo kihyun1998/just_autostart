@@ -10,8 +10,8 @@
 /// [WindowsAutostartOptions]. Only Task Scheduler can start a program built by
 /// `dart compile exe` without a console window appearing at every login.
 ///
-/// macOS is not implemented yet and currently raises
-/// [UnsupportedPlatformException] like any other platform.
+/// macOS registers a launchd user agent — a property list in the user's
+/// `LaunchAgents` directory — with no FFI and no dependencies.
 library;
 
 export 'src/autostart.dart';

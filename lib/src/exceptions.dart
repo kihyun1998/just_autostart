@@ -23,9 +23,8 @@ sealed class AutostartException implements Exception {
 /// Raised rather than quietly doing nothing, because a silent no-op lets a
 /// developer ship a broken feature without ever seeing a failure.
 ///
-/// Windows and macOS are the platforms this package targets. Windows is
-/// implemented; macOS is not yet, so it raises this alongside every platform
-/// that is out of scope.
+/// Windows and macOS are the platforms this package targets, and both are
+/// implemented. Every other operating system raises this.
 final class UnsupportedPlatformException extends AutostartException {
   /// Creates a failure naming the [operatingSystem] that has no backend.
   const UnsupportedPlatformException(this.operatingSystem);
@@ -82,7 +81,74 @@ final class MechanismCleanupException extends AutostartException {
       '${cause.message}';
 }
 
-/// Thrown when an operating system call fails.
+/// Thrown when the executable a caller asked to register exists but cannot run.
+///
+/// A file with no execute permission passes an existence check but fails at
+/// launch: launchd's `execvp` returns `EACCES` at the user's next login and
+/// nothing starts, with no error the caller ever sees. Distinguished from
+/// [ExecutableNotFoundException] because the remedy is different — the path is
+/// right, the file is there, and what it needs is its execute bit, not a
+/// corrected path.
+///
+/// The check is "has any execute bit set". Resolving whether the *current user*
+/// specifically may execute the file — ownership against owner/group/other
+/// bits — is left out: the failure this exists to catch at development time is a
+/// binary shipped or copied with no execute permission at all.
+final class ExecutablePermissionException extends AutostartException {
+  /// Creates a failure naming the [executablePath] that is not executable.
+  const ExecutablePermissionException(this.executablePath);
+
+  /// The path that was checked.
+  final String executablePath;
+
+  @override
+  String get message =>
+      'The file at "$executablePath" is not executable; it has no execute '
+      'permission bit set.';
+}
+
+/// Thrown when a registration this package must read back is corrupt.
+///
+/// This is distinct from [AutostartOsException] on purpose: no operating system
+/// call failed. A file was read, or a stored value fetched, and its *contents*
+/// are not something this package could have written — a plist that is not
+/// well-formed XML, or one missing the program it must name.
+///
+/// It matters that this is its own type rather than a silent "not registered".
+/// A malformed registration sits at a path derived from the caller's own
+/// `label` — unlike a foreign entry in a shared namespace, which is left alone —
+/// so a caller can act on it (delete it, warn the user) rather than see autostart
+/// silently report off for a file that is theirs and broken.
+final class MalformedRegistrationException extends AutostartException {
+  /// Creates a failure describing an unreadable registration.
+  ///
+  /// [detail] says what could not be parsed. [path] is the file it was read
+  /// from, where the caller has one — a pure parser has no path to give, so a
+  /// backend that read from disk attaches it on the way out, making the failure
+  /// self-contained for the "delete it and warn the user" remedy the class is
+  /// for.
+  const MalformedRegistrationException(this.detail, {this.path});
+
+  /// What was wrong with the stored registration.
+  final String detail;
+
+  /// The file the corrupt registration was read from, if known.
+  final String? path;
+
+  @override
+  String get message => path == null
+      ? 'The stored registration is malformed: $detail'
+      : 'The stored registration at "$path" is malformed: $detail';
+}
+
+/// Thrown when an operating system call fails, or an OS-provided precondition
+/// is not met.
+///
+/// Mostly a failed call — a Win32 function, a `launchctl` invocation — but it
+/// also covers a precondition the OS was supposed to provide and did not, such
+/// as an unset `HOME` when resolving the macOS `LaunchAgents` directory. Those
+/// have no numeric code, so [errorCode] is null and [operation] carries the
+/// context.
 ///
 /// Carries enough detail to be actionable in a log: which operation failed,
 /// what the platform said, and the numeric code where the platform reports one.
