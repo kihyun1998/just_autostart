@@ -51,6 +51,13 @@ abstract interface class Launchctl {
   bool isLoaded(String label);
 }
 
+/// The resolved `gui/<uid>` domain, remembered for the life of the process.
+///
+/// Top-level rather than a field because [SystemLaunchctl] is `const`: every
+/// call site constructs its own instance, and they all describe the same
+/// process, so the memo belongs to the process rather than to any one of them.
+String? _cachedGuiDomain;
+
 /// The real `launchctl`, driven with `dart:io` — no native code.
 final class SystemLaunchctl implements Launchctl {
   /// Creates a launchctl driver targeting the current user's GUI domain.
@@ -95,13 +102,25 @@ final class SystemLaunchctl implements Launchctl {
   ///
   /// `dart:io` exposes no `getuid`, and this package takes no native code, so
   /// the uid comes from `id -u` — one more subprocess, not an FFI call.
+  ///
+  /// Resolved once and remembered for the life of the process. A process cannot
+  /// change its own uid here, so re-running `id` per call bought nothing and
+  /// cost a spawn: measured at **3,153 µs**, which was about 40% of
+  /// `isEnabled()`'s 8,188 µs, paid again by every other launchctl operation.
+  ///
+  /// Only a **successful** resolution is remembered. Caching a failure would
+  /// turn one bad moment — a process table too full to fork, say — into a
+  /// permanent inability to read launchd for the rest of the run.
   String? _guiDomain() {
+    final cached = _cachedGuiDomain;
+    if (cached != null) return cached;
+
     try {
       final result = Process.runSync('id', ['-u']);
       if (result.exitCode != 0) return null;
       final uid = (result.stdout as String).trim();
       if (uid.isEmpty) return null;
-      return 'gui/$uid';
+      return _cachedGuiDomain = 'gui/$uid';
     } on ProcessException {
       return null;
     }

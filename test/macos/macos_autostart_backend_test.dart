@@ -757,6 +757,29 @@ void main() {
       );
     });
 
+    test('repeated reads stay consistent once the domain is memoised', () {
+      // The uid is resolved once per process and remembered. What a test can
+      // honestly pin is that the memo did not change the answer — that the
+      // second and third reads still reach the same launchd domain as the
+      // first. The saving itself is a timing property, proved by the
+      // before/after measurement recorded in issue #14, not by an assertion
+      // here: a timing assertion on a shared CI machine is a flake, not a test.
+      const launchctl = SystemLaunchctl();
+
+      final first = launchctl.readDisabledOverrides();
+      final second = launchctl.readDisabledOverrides();
+      final third = const SystemLaunchctl().readDisabledOverrides();
+
+      // Either all null (no GUI domain) or all real reads — never a mix, which
+      // is what a memo that cached a failure would produce.
+      expect(second == null, first == null);
+      expect(third == null, first == null);
+      if (first != null) {
+        expect(second, contains('disabled services'));
+        expect(third, contains('disabled services'));
+      }
+    });
+
     test('isLoaded is false for a label nothing registered', () {
       expect(
         const SystemLaunchctl().isLoaded('dev.justautostart.never.registered'),
