@@ -14,7 +14,7 @@ enough to build against.
 | -------- | --------- | ----- |
 | Windows | Registry `Run` key | **Works** |
 | Windows | Task Scheduler (hidden window, delayed start) | **Works** |
-| macOS | launchd user agent | **Registers** — `enable`/`disable`/`isEnabled`. Honouring the user's Login Items toggle (System Settings) is not wired up yet, so `isEnabled()` does not yet reflect an agent switched off there. |
+| macOS | launchd user agent | **Works** — `enable`/`disable`/`isEnabled`, and `isEnabled()` honours the user's Login Items toggle (System Settings), which `enable()` clears. |
 | Everything else | — | Raises `UnsupportedPlatformException` |
 
 ## Choosing a Windows mechanism

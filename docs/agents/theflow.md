@@ -184,8 +184,17 @@ Add to this list when a pass finds another.
 
 - launchd's **disable overrides live outside the plist**, in root-owned state
   (`/var/db/com.apple.xpc.launchd/disabled.<UID>.plist`, read via `launchctl
-  print-disabled gui/<uid>`). Plist existence ≠ the agent will run. This is
-  **#9's** store; #8 does not read it.
+  print-disabled gui/<uid>`). Plist existence ≠ the agent will run. **Read and
+  cleared in #9** via `launchctl` (no direct file access — the file is
+  root-owned; launchctl mediates). The **output format is version-dependent and
+  Apple-declared unstable**: macOS 13+ prints `"<label>" => disabled` /
+  `=> enabled`, macOS ≤12 printed `"<label>" => true` / `=> false`. The parser
+  reads both veto forms (`disabled`/`true`) and treats anything else — an "on"
+  value, an absent label, an unrecognised format — as *not* vetoed, so a future
+  format change degrades to slightly-too-optimistic rather than a false veto. A
+  read that fails entirely (no GUI domain over SSH/headless) is likewise "no veto
+  known", and `enable()` and `isEnabled()` share that predicate so they cannot
+  disagree.
 - **"How many stores does *this* surface have" — macOS has at least three**, the
   lessons #17 shape landing again. Beyond the external override DB above, **two
   more live *inside* the plist `isEnabled()` already parses** (verified against
@@ -275,16 +284,24 @@ package. Consequences accepted: no `force` parameter, no additional exception
 type, and `isEnabled()` reads a veto that `enable()` will overwrite. **This is
 the maintainer's call to reverse, not a derivation to re-argue.**
 
-**What that rule is decided *on* — Windows evidence only.** The reference's
-override is in its *Windows* implementation; its macOS path delegates to an API
-with no force option at all. So the rule above is confirmed for one of the two
-platforms and **assumed** for the other: whether `launchctl enable
-gui/$UID/<label>` succeeds unprivileged is unmeasured, because launchd's disable
-overrides live in root-owned state. **#9 measures it and writes the answer back
-here.** If it cannot be cleared, `enable()` on macOS throws a typed exception
-naming the veto — the one thing it may not do is return success while
-`isEnabled()` still reads false, which is the reference's defect (lessons #2),
-not its behaviour.
+**What that rule is decided *on* — now measured on both platforms.** The
+reference's override is in its *Windows* implementation; its macOS path delegates
+to an API with no force option at all, so the macOS half was originally
+**assumed**. **#9 measured it** (the write-back this section promised): on macOS
+14.5, `launchctl enable gui/$UID/<label>` **succeeds for an unprivileged user in
+their own GUI domain** — exit 0, no `sudo`, verified with a throwaway probe.
+launchctl mediates the root-owned override store over XPC, so the file being
+root-owned does not stop the user clearing their own veto. **So `enable()` clears
+the override and the platforms are symmetric** — branch (a) of the ticket, not
+the throw-a-typed-veto branch (b). *Validity condition:* measured as an
+admin-group member without `sudo`; not re-measured on a standard (non-admin)
+account, but the `gui/$UID` domain is the user's own session, where root is the
+only privilege boundary that applies. If the clear ever *does* fail while a veto
+stands, `enable()` throws rather than returning a success `isEnabled()` would
+contradict — the one thing it may not do (lessons #2). Where the read is simply
+*unavailable* (a headless/SSH session with no GUI domain), both `enable()` and
+`isEnabled()` degrade to "no veto known" through the same predicate, so they
+never disagree.
 
 **But `enable()` must never silently fail.** This is *not* part of the behaviour
 being followed — it is the reference's defect. `LaunchAtLogin` swallows a failed

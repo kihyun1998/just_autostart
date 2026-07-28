@@ -49,8 +49,16 @@ Unreleased.
 - `isEnabled()` on macOS reports what will *actually* launch, not merely that a
   file exists: it reads the executable and arguments, `RunAtLoad`, and the
   in-plist `Disabled` key — three stores inside the file, any of which can leave
-  a present plist inert. Honouring the user's System Settings Login-Items toggle,
-  which lives in a fourth store outside the plist, is not yet wired up.
+  a present plist inert — **and** the user's System Settings Login-Items veto,
+  the fourth store, which lives outside the plist in launchd's disable overrides
+  and is read through `launchctl`.
+- `enable()` on macOS **clears that veto**, so an app that calls `enable()` after
+  the user switched the agent off in System Settings turns it back on rather than
+  returning a success that `isEnabled()` would immediately contradict. Clearing
+  the override was measured to work for an unprivileged user; where it genuinely
+  cannot (the veto stands and will not clear), `enable()` throws rather than
+  reporting a false success. A `launchctl` that cannot be read at all degrades to
+  "no veto known", the same for both calls, so they never disagree.
 - `disable()` on macOS removes a plist only when its internal `Label` is this
   application's — launchd identifies a job by that label, not by the file name,
   so a third party's agent that merely shares the file name is left untouched.

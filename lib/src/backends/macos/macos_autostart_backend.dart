@@ -5,6 +5,7 @@ import '../../autostart_config.dart';
 import '../../exceptions.dart';
 import '../../list_equals.dart';
 import 'launch_agent_plist.dart';
+import 'launchctl.dart';
 
 /// Registers a program at login through a launchd **user agent**.
 ///
@@ -28,10 +29,15 @@ final class MacosAutostartBackend implements AutostartBackend {
   const MacosAutostartBackend({
     required this.config,
     Directory? launchAgentsDirectory,
+    this.launchctl = const SystemLaunchctl(),
   }) : _launchAgentsDirectory = launchAgentsDirectory;
 
   /// What to register.
   final AutostartConfig config;
+
+  /// Reads and clears the user's launchd disable overrides — the second store,
+  /// separate from the plist, that records a Login Items veto.
+  final Launchctl launchctl;
 
   final Directory? _launchAgentsDirectory;
 
@@ -51,9 +57,19 @@ final class MacosAutostartBackend implements AutostartBackend {
   /// that does not exist, because the alternative is a registration that looks
   /// successful and silently launches nothing at the user's next login.
   ///
-  /// This slice writes the file only. Clearing a user's Login-Items veto — the
-  /// launchd disable override that lives outside the plist — is a separate store
-  /// and a separate ticket (#9); until then `enable()` does not touch it.
+  /// It also **clears the user's Login-Items veto** — the launchd disable
+  /// override that lives outside the plist, recording that the user switched the
+  /// agent off in System Settings. Overriding that veto matches the package's
+  /// boundary rule (the calling application is expected to have asked its user
+  /// first) and keeps the platforms symmetric with Windows, which rewrites its
+  /// approval byte on every `enable()`. Clearing it via `launchctl enable` was
+  /// measured to succeed unprivileged on macOS 14.5 (see `docs/agents/theflow.md`).
+  ///
+  /// If the veto still stands after the attempt — the clear failed *and* the
+  /// override is confirmed present — `enable()` throws rather than returning a
+  /// success that a following `isEnabled()` would contradict. A launchctl that
+  /// cannot be read at all degrades to "no veto known", the same as
+  /// [isEnabled], so the two never disagree.
   @override
   Future<void> enable() async {
     final executable = File(config.executablePath);
@@ -81,6 +97,16 @@ final class MacosAutostartBackend implements AutostartBackend {
         operation: 'write the LaunchAgent plist',
         detail: error.message,
         errorCode: error.osError?.errorCode,
+      );
+    }
+
+    launchctl.clearOverride(config.label);
+    if (_isVetoedByUser()) {
+      throw AutostartOsException(
+        operation: 'clear the Login Items veto for "${config.label}"',
+        detail:
+            'the user switched this agent off in System Settings and the veto '
+            'could not be cleared',
       );
     }
   }
@@ -152,10 +178,11 @@ final class MacosAutostartBackend implements AutostartBackend {
   /// it sits at this application's own label path, so it is a broken
   /// registration to surface, not a foreign entry to ignore.
   ///
-  /// One further store is **out of this slice**: launchd's disable overrides,
-  /// which live *outside* the plist in root-owned state and record the user
-  /// switching the agent off in System Settings. Reading that is #9, which ANDs
-  /// its result in here.
+  /// The final condition is the fourth store, and the only one *outside* the
+  /// file: launchd's disable overrides, which record the user switching the
+  /// agent off in System Settings. It is read through [launchctl]; a launchctl
+  /// that cannot be read degrades to "no veto", so an OS change makes this
+  /// slightly too optimistic rather than breaking the API.
   @override
   Future<bool> isEnabled() async {
     final file = _plistFile;
@@ -177,8 +204,22 @@ final class MacosAutostartBackend implements AutostartBackend {
     if (!listEquals(parsed.args, config.args)) return false;
     if (!parsed.runAtLoad) return false;
     if (parsed.disabled) return false;
+    if (_isVetoedByUser()) return false;
 
     return true;
+  }
+
+  /// Whether the user has switched this agent off in System Settings.
+  ///
+  /// Reads launchd's disable overrides through [launchctl]. A read that fails or
+  /// returns an unrecognised format is treated as "not vetoed" — the veto has to
+  /// be positively present to count, so a launchctl change degrades safely
+  /// instead of reporting a working agent as off. `enable()` and [isEnabled] go
+  /// through this same predicate, so they cannot disagree about the veto.
+  bool _isVetoedByUser() {
+    final overrides = launchctl.readDisabledOverrides();
+    if (overrides == null) return false;
+    return overridesDisableLabel(overrides, config.label);
   }
 
   static Directory _defaultLaunchAgentsDirectory() {

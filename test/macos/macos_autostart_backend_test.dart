@@ -5,8 +5,51 @@ import 'dart:io';
 
 import 'package:just_autostart/just_autostart.dart';
 import 'package:just_autostart/src/backends/macos/launch_agent_plist.dart';
+import 'package:just_autostart/src/backends/macos/launchctl.dart';
 import 'package:just_autostart/src/backends/macos/macos_autostart_backend.dart';
 import 'package:test/test.dart';
+
+/// A launchd override store that never touches the machine.
+///
+/// Models the disable-override state as a set of labels the user switched off,
+/// so a test can plant a veto, watch `enable()` clear it, and read it back —
+/// without depending on, or mutating, the developer's real launchd state.
+final class FakeLaunchctl implements Launchctl {
+  FakeLaunchctl({
+    Set<String>? disabled,
+    this.available = true,
+    this.clearSucceeds = true,
+  }) : _disabled = {...?disabled};
+
+  final Set<String> _disabled;
+
+  /// When false, `readDisabledOverrides` returns null — launchctl unavailable.
+  final bool available;
+
+  /// When false, `clearOverride` fails and leaves the veto standing.
+  final bool clearSucceeds;
+
+  final List<String> clearCalls = [];
+
+  @override
+  String? readDisabledOverrides() {
+    if (!available) return null;
+    final buffer = StringBuffer('\tdisabled services = {\n');
+    for (final label in _disabled) {
+      buffer.writeln('\t\t"$label" => disabled');
+    }
+    buffer.write('\t}\n');
+    return buffer.toString();
+  }
+
+  @override
+  bool clearOverride(String label) {
+    clearCalls.add(label);
+    if (!clearSucceeds) return false;
+    _disabled.remove(label);
+    return true;
+  }
+}
 
 void main() {
   late Directory scratch;
@@ -40,10 +83,14 @@ void main() {
     List<String> args = const [],
     String label = 'dev.justautostart.test',
     Directory? directory,
+    Launchctl? launchctl,
   }) {
     return MacosAutostartBackend(
       config: config(executablePath: executablePath, args: args, label: label),
       launchAgentsDirectory: directory ?? scratch,
+      // A fake by default, so the #8 behaviours stay off the real machine now
+      // that isEnabled() and enable() consult launchctl.
+      launchctl: launchctl ?? FakeLaunchctl(),
     );
   }
 
@@ -308,6 +355,98 @@ void main() {
             file.path,
           ),
         ),
+      );
+    });
+  });
+
+  group('the Login Items veto (launchd disable overrides)', () {
+    const label = 'dev.justautostart.test';
+
+    test('isEnabled is false when the user switched the agent off', () async {
+      // The plist is present and correct; only the user's System Settings veto
+      // stands. A check of the file alone would wrongly report enabled.
+      plistFile(label).writeAsStringSync(
+        generateLaunchAgentPlist(
+          label: label,
+          executablePath: realExecutable,
+          args: const [],
+        ),
+      );
+
+      final b = backend(launchctl: FakeLaunchctl(disabled: {label}));
+      expect(await b.isEnabled(), isFalse);
+    });
+
+    test(
+      'isEnabled degrades to enabled when launchctl cannot be read',
+      () async {
+        await backend().enable();
+
+        final b = backend(launchctl: FakeLaunchctl(available: false));
+        expect(await b.isEnabled(), isTrue);
+      },
+    );
+
+    test('enable clears a standing veto', () async {
+      final launchctl = FakeLaunchctl(disabled: {label});
+      final b = backend(launchctl: launchctl);
+
+      await b.enable();
+
+      expect(launchctl.clearCalls, contains(label));
+      expect(await b.isEnabled(), isTrue);
+    });
+
+    test('no path leaves enable successful while isEnabled is false', () async {
+      // The pairing the whole ticket exists to guarantee: after enable() returns
+      // without throwing, isEnabled() is true.
+      final b = backend(launchctl: FakeLaunchctl(disabled: {label}));
+
+      await b.enable();
+
+      expect(await b.isEnabled(), isTrue);
+    });
+
+    test('enable throws when it cannot clear a standing veto', () async {
+      // If the veto stands and cannot be cleared, enable() must not return
+      // success — that is exactly the silent-failure the identity forbids.
+      final b = backend(
+        launchctl: FakeLaunchctl(disabled: {label}, clearSucceeds: false),
+      );
+
+      expect(() => b.enable(), throwsA(isA<AutostartOsException>()));
+    });
+
+    test('enable succeeds when launchctl is unavailable', () async {
+      // No override is knowable, so there is nothing to clear and no
+      // contradiction to guard against — enable() proceeds.
+      final b = backend(launchctl: FakeLaunchctl(available: false));
+
+      await b.enable();
+
+      expect(await b.isEnabled(), isTrue);
+    });
+  });
+
+  group('against the real launchctl', () {
+    test('reads the real override roster, or degrades, without throwing', () {
+      // The one integration test the ticket asks for: the real
+      // `launchctl print-disabled gui/<uid>` is invoked, and its absence — a
+      // headless runner with no GUI domain — is handled gracefully by returning
+      // null rather than throwing.
+      //
+      // Read-only on purpose. `launchctl enable` (the clear path) writes a
+      // durable row into the user's shared override store with no clean way to
+      // remove it, so exercising it here would litter real OS state (lessons
+      // #8). That path is proven instead by the throwaway measurement recorded
+      // in issue #9, and its logic by the FakeLaunchctl tests above.
+      final overrides = const SystemLaunchctl().readDisabledOverrides();
+
+      // Either the real roster (a GUI session) or null (headless) — never a
+      // throw, and when present it is the format the parser expects.
+      expect(
+        overrides == null || overrides.contains('disabled services'),
+        isTrue,
       );
     });
   });
