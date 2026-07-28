@@ -322,7 +322,41 @@ final class WindowsTaskScheduler {
   /// implements `isEnabled()` on top of this. A backend that reports this
   /// method's answer as "autostart is on" would be repeating the exact lie the
   /// `Run` key backend exists to avoid.
-  bool taskExists(String name) => readTask(name) != null;
+  ///
+  /// **Registered is also not the same as *ours*.** This method says a task by
+  /// that name is there, and the folder is a shared namespace, so nothing about
+  /// its answer licenses a deletion. Ownership is a separate question, and it is
+  /// asked by whoever is about to remove something — with the full read, which
+  /// this deliberately is not.
+  ///
+  /// Answered from `GetTask` alone. Spelling this as `readTask(name) != null`
+  /// read as the obvious reuse and was not: [readTask] fetches the whole task
+  /// **definition**, which is a round trip of its own — **2.12 ms, 46%** of that
+  /// read — to reach fields this question does not consult.
+  ///
+  /// **The two agree wherever [readTask] *returns*, and a test pins that.** They
+  /// no longer agree where it **throws**: `_read` continues into `get_Enabled`
+  /// and `get_Definition`, both of which raise on failure, so a task `GetTask`
+  /// finds but whose definition cannot be read is `true` here and an
+  /// `AutostartOsException` there. Before, this method went through [readTask]
+  /// and threw with it. The new answer is the better one — an existence question
+  /// should not fail because a definition is unreadable — but it is a changed
+  /// failure contract and not merely a cheaper route to the same one.
+  ///
+  /// Whether that state is reachable is **not measured**. The shape that would
+  /// produce it is another user's task under a colliding name, whose file grants
+  /// full control only to its creator (see [createTask]); it needs a second
+  /// account to plant, which lessons #24 records this suite cannot do.
+  ///
+  /// Nothing in `lib/` calls this — [WindowsTaskSchedulerBackend] needs the full
+  /// read for all three of its operations. The saving is real and currently
+  /// collected by tests only.
+  bool taskExists(String name) {
+    return _withFolder(create: false, (arena, service, folder) {
+      if (folder == nullptr) return false;
+      return _getTask(arena, folder, name) != null;
+    });
+  }
 
   /// Reads back what the task named [name] holds, or `null` when there is none.
   ///
@@ -393,8 +427,15 @@ final class WindowsTaskScheduler {
     return true;
   }
 
-  /// Runs [body] with a connected `ITaskService` and the root task folder.
-  T _withRoot<T>(T Function(Arena arena, ComPtr service, ComPtr root) body) {
+  /// Runs [body] with a connected `ITaskService` and nothing else.
+  ///
+  /// This is the preamble every operation here pays, and all of it is remote:
+  /// `CoCreateInstance` resolves an in-process DLL that forwards to the Task
+  /// Scheduler service over RPC, and `Connect` is the call to that service.
+  /// Measured at **1.35 ms** together, against 12 µs for the COM apartment
+  /// around them — so what costs anything in this file is the number of round
+  /// trips, never the marshalling.
+  T _withService<T>(T Function(Arena arena, ComPtr service) body) {
     return withCom(() {
       return using((arena) {
         final service = createInstance(
@@ -403,39 +444,101 @@ final class WindowsTaskScheduler {
           _iidTaskService,
         );
         _connectToLocalMachine(arena, service);
-
-        // The root always exists, so a `null` here would mean Task Scheduler
-        // itself is in a state this package has no model for. Reported as this
-        // package's own failure type rather than left to become a null-check
-        // `TypeError`: every failure crossing this boundary is documented as an
-        // `AutostartException`, and "the root folder is missing" should not be
-        // the one exception to that.
-        final root = _folderAt(arena, service, r'\');
-        if (root == null) {
-          throw const AutostartOsException(
-            operation: 'ITaskService::GetFolder',
-            detail: 'the root task folder does not exist',
-          );
-        }
-        return body(arena, service, root);
+        return body(arena, service);
       });
     });
+  }
+
+  /// Runs [body] with the **root** task folder — for the two operations that
+  /// genuinely act on it.
+  ///
+  /// Only [deleteFolder] and [_createFolder] do: both name this package's
+  /// folder *relative to the root*, so the root is the object the call is made
+  /// on. Nothing that reads a task needs it, which is why this is no longer on
+  /// the path [_withFolder] takes.
+  T _withRoot<T>(T Function(Arena arena, ComPtr service, ComPtr root) body) =>
+      _withService(
+        (arena, service) => body(arena, service, _rootFolder(arena, service)),
+      );
+
+  /// `ITaskService::GetFolder(\)`.
+  ///
+  /// The root always exists, so a `null` here would mean Task Scheduler itself
+  /// is in a state this package has no model for. Reported as this package's
+  /// own failure type rather than left to become a null-check `TypeError`:
+  /// every failure crossing this boundary is documented as an
+  /// `AutostartException`, and "the root folder is missing" should not be the
+  /// one exception to that.
+  ComPtr _rootFolder(Arena arena, ComPtr service) {
+    final root = _folderAt(arena, service, r'\');
+    if (root == null) {
+      throw const AutostartOsException(
+        operation: 'ITaskService::GetFolder',
+        detail: 'the root task folder does not exist',
+      );
+    }
+    return root;
   }
 
   /// Runs [body] with [folder], creating it when [create] is set.
   ///
   /// When the folder is absent and [create] is not set, [body] receives
   /// [nullptr] — the callers that read rather than write turn that into "no".
+  ///
+  /// **The root folder is fetched only on the branch that creates.** This used
+  /// to route through [_withRoot] unconditionally, which cost a `GetFolder(\)`
+  /// round trip on every read and every delete, for a pointer those paths
+  /// discard — measured at **240 µs, 13%** of reaching this folder at all.
+  /// `GetFolder` takes an absolute path, so [folder] is reachable without
+  /// walking to it.
+  ///
+  /// *Validity condition, and the reason this needed a probe rather than an
+  /// argument:* it holds because the root fetch is not an implicit
+  /// **precondition** of resolving another path — measured in a cold process
+  /// where `GetFolder(<ours>)` was the first folder call made, returning the
+  /// folder and a usable `GetTask` on it. That could not be shown from the test
+  /// suite: a test process performs many operations in a row, so it is warm by
+  /// the second one, and had the root been a precondition every test here would
+  /// still have passed while a consumer's first call failed.
+  ///
+  /// **Consequence, accepted: the missing-root guard now runs only where the
+  /// root is the object of the call** — [deleteFolder], and [createTask] on the
+  /// branch that has to create the folder. It does **not** run on [readTask],
+  /// [taskExists], [deleteTask], or a [createTask] whose folder already exists.
+  /// Note the third of those: `deleteTask` is a *write*, so this is not the
+  /// read/write split it first looks like.
+  ///
+  /// What makes that acceptable is not that the guard was "only diagnostic" —
+  /// it is that the state it guards cannot change an outcome here. Task
+  /// Scheduler stores folders as **real directories** under `System32\Tasks`
+  /// (which is how this package's own tests check for one), so a root that does
+  /// not resolve means `\just_autostart` cannot resolve either. A read then
+  /// answers "nothing registered", which is *true*, and `deleteTask` returns
+  /// `false` because there is genuinely nothing to delete. `createTask` is the
+  /// one operation that would act on the missing root, and it still raises.
+  ///
+  /// **Also reordered, on the write path:** the folder-exists check now happens
+  /// *before* the root is fetched, where it used to happen after. That widens
+  /// the window between "the folder is absent" and `CreateFolder` by one round
+  /// trip — so two processes of the same application calling `enable()` at the
+  /// same instant have marginally more room to turn a benign race into the
+  /// already-exists failure [_createFolder] deliberately does not swallow.
+  /// Measured at about **200 µs**; recorded because it is a real widening, not
+  /// because concurrent `enable()` is a case this package supports.
   T _withFolder<T>(
     T Function(Arena arena, ComPtr service, ComPtr folder) body, {
     required bool create,
   }) {
-    return _withRoot((arena, service, root) {
+    return _withService((arena, service) {
       final existing = _folderAt(arena, service, folder.path);
       if (existing != null) return body(arena, service, existing);
       if (!create) return body(arena, service, nullptr);
 
-      return body(arena, service, _createFolder(arena, root));
+      return body(
+        arena,
+        service,
+        _createFolder(arena, _rootFolder(arena, service)),
+      );
     });
   }
 

@@ -164,6 +164,32 @@ Add to this list when a pass finds another.
   folder, after which removing the package's own folder fails with
   `ERROR_DIR_NOT_EMPTY`. `AutostartConfig` validates separators in `label`, not
   in `appName`, so the Task Scheduler backend checks it.
+- **`ITaskService::GetFolder` takes an absolute path and resolves it with no
+  prior root fetch.** Documented ("The root task folder is specified with a
+  backslash… an example of a task folder path, under the root task folder, is
+  `\MyTaskFolder`"), and measured **cold** (#15): in a fresh process where
+  `GetFolder(\ours)` was the *first* folder call, it returned `S_OK` and a
+  pointer `GetTask` worked on. The cold measurement is the one that mattered:
+  had the root been an implicit precondition, every test in the suite would
+  still have passed — a test process is warm by its second operation — while a
+  consumer's first call failed.
+- **An unelevated single account cannot plant a task whose principal is not
+  itself.** Measured (#15): a `/xml` task carrying a `GroupId` principal, and
+  one carrying an empty `<Principal>`, are **both** refused with access denied;
+  and a task planted with `schtasks /create /tr` — the "somebody else's task"
+  fixture — has *this* account as its principal, so `runsAsCurrentUser` is
+  `true` for it. So `_runsAsCurrentUser`'s rejecting branch is unreachable from
+  the suite, and any test comment claiming to catch an ownership drift is
+  claiming a power it does not have. The lessons #24 shape, one ticket later.
+- **`GetFolder` reported `ERROR_FILE_NOT_FOUND` for every absent shape probed**
+  — a missing folder under the root, a missing folder under a *missing* folder,
+  and a missing intermediate under an *existing* folder (#15, three shapes, cold
+  processes). `com.dart`'s `reportsAbsent` records that the third of those gives
+  `ERROR_PATH_NOT_FOUND` instead. Not reproduced on Windows 11 build 26200, and
+  **not removed**: the code accepts both codes, so handling one the OS may never
+  emit costs nothing, while deleting a guard because a probe failed to reproduce
+  it is the "unconfirmed ≠ absent" trap. Recorded so the next reader knows the
+  claim is unreproduced rather than unchecked.
 - **The task XML omits every setting left at its default**, so it cannot
   distinguish "set to the default" from "never set" (#12). `RunLevel` is the
   clearest case: writing `TASK_RUNLEVEL_LUA` explicitly produces XML with no

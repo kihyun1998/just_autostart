@@ -508,6 +508,147 @@ void main() {
     });
   });
 
+  // `taskExists` answers from `GetTask` alone, where `readTask` goes on to
+  // fetch the whole task definition. That is the saving — and it is also a
+  // second code path where there used to be one, so the two can now drift.
+  //
+  // "It is registered" is a *weaker* question than "it is enabled" or "it is
+  // ours", so the states that matter are the ones where those answers disagree.
+  // Two of the three are pinned here, and **the third cannot be**:
+  //
+  // - **enablement** — caught. Replacing the body with the task's `enabled`
+  //   flag breaks only 'for a task the user switched off', and no other test in
+  //   this file.
+  // - **`_read` giving up** — caught. Replacing it with a check that the task
+  //   has a readable executable breaks only 'for a task whose action it cannot
+  //   read', because `_read` answers `unrecognised()` there while `GetTask`
+  //   plainly found something.
+  // - **ownership** — *not* caught, and not catchable here. Replacing the body
+  //   with `readTask(name)?.runsAsCurrentUser ?? false` passes every test in
+  //   this file, because a task with a principal that is **not this user**
+  //   cannot be planted by the account running the suite. Measured: a `/xml`
+  //   task carrying a `GroupId` principal, and one carrying no principal
+  //   identity at all, are both refused with access denied unelevated — and the
+  //   `schtasks /tr` task below, which reads as "somebody else's" by its path,
+  //   still has *this* account as its principal, so `runsAsCurrentUser` is
+  //   `true` for it. Same shape as lessons #24: a guard whose rejecting branch
+  //   one account cannot reach. Recorded rather than papered over, because a
+  //   comment claiming this group catches an ownership drift would be an
+  //   assertion that cannot fail for the thing it names.
+  group('taskExists agrees with readTask', () {
+    void expectAgreement(String name, {required bool present}) {
+      final exists = _scheduler.taskExists(name);
+      expect(
+        exists,
+        _scheduler.readTask(name) != null,
+        reason: 'taskExists and readTask must answer the same question',
+      );
+      expect(exists, present);
+    }
+
+    test('for a task this package registered', () {
+      _scheduler.createTask(
+        'Probe',
+        TaskRegistration(executablePath: _realExecutable),
+      );
+
+      expectAgreement('Probe', present: true);
+    });
+
+    test('for a name nothing registered', () {
+      expectAgreement('NeverRegistered', present: false);
+    });
+
+    test('when the folder itself does not exist', () {
+      _scheduler.deleteFolder();
+
+      expectAgreement('Probe', present: false);
+    });
+
+    // Registered, and not ours. Both must still say it is there: this method
+    // reports existence, and the ownership guard is a separate question asked
+    // by whoever is about to delete something.
+    test('for a task somebody else registered', () {
+      final result = Process.runSync('schtasks', [
+        '/create',
+        '/tn',
+        '${_scratchFolder.path}\\Probe',
+        '/tr',
+        r'C:\Windows\System32\cmd.exe /c exit',
+        '/sc',
+        'ONCE',
+        '/st',
+        '23:59',
+        '/f',
+      ]);
+      expect(result.exitCode, 0, reason: 'schtasks should have created it');
+
+      expectAgreement('Probe', present: true);
+    });
+
+    // Registered, and vetoed by the user. Existence is not enablement — the
+    // recurring shape this package is built around — so both must say it is
+    // there while `isEnabled()` says it is off.
+    test('for a task the user switched off', () {
+      _scheduler.createTask(
+        'Probe',
+        TaskRegistration(executablePath: _realExecutable),
+      );
+
+      final result = Process.runSync('schtasks', [
+        '/change',
+        '/tn',
+        '${_scratchFolder.path}\\Probe',
+        '/disable',
+      ]);
+      expect(result.exitCode, 0, reason: 'schtasks should have disabled it');
+
+      expectAgreement('Probe', present: true);
+      expect(_scheduler.readTask('Probe')!.enabled, isFalse);
+    });
+
+    // The state where `readTask` **gives up**: a `ComHandler` action does not
+    // answer to `IExecAction`, so `_read` returns a record with no executable
+    // rather than a full one. `GetTask` found a task either way, so both
+    // methods must still say it is there — and this is the only state in the
+    // group where `readTask`'s own answer is degraded.
+    test('for a task whose action it cannot read', () {
+      final directory = Directory.systemTemp.createTempSync('ja_agree_com');
+      addTearDown(() => directory.deleteSync(recursive: true));
+      final file = File('${directory.path}${Platform.pathSeparator}task.xml')
+        ..writeAsStringSync('''
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers />
+  <Principals>
+    <Principal id="Author">
+      <UserId>${currentUserSid()}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+    </Principal>
+  </Principals>
+  <Actions Context="Author">
+    <ComHandler>
+      <ClassId>{00000000-0000-0000-0000-000000000001}</ClassId>
+    </ComHandler>
+  </Actions>
+</Task>
+''');
+
+      final result = Process.runSync('schtasks', [
+        '/create',
+        '/tn',
+        '${_scratchFolder.path}\\Probe',
+        '/xml',
+        file.path,
+        '/f',
+      ]);
+      expect(result.exitCode, 0, reason: 'schtasks said: ${result.stderr}');
+
+      expectAgreement('Probe', present: true);
+      expect(_scheduler.readTask('Probe')!.executablePath, isNull);
+    });
+  });
+
   group('deleteTask', () {
     test('removes a task Windows can no longer see', () {
       _scheduler.createTask(

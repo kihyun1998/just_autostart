@@ -720,3 +720,57 @@ settled the caveat in the same restart.
 **Consequence:** a manual verification is designed as a **matrix of predictions**
 — every case where the answer must be *no* gets an agent too — and the write-back
 records which predictions held, not that the feature worked.
+
+---
+
+## #27 — two mutations that only confirmed the tests I had already written — Step 5
+
+**Rule it proves:** the test-trust gate is not satisfied by *a* mutation. A
+mutation you invent after writing the test is drawn from the same model the test
+came from, so it can only re-confirm what the test was already aimed at.
+
+#15's new test group pinned that `taskExists` and `readTask` still agree. To
+clear the gate I planted two wrong implementations and watched each die:
+
+| mutation | killed by | and by nothing else |
+| --- | --- | --- |
+| return the task's `enabled` flag | 'for a task the user switched off' | ✓ |
+| return `startsAtLogon` | 'for a task somebody else registered' | ✓ |
+
+Clean results, and the group's comment then claimed that *"a later change that
+quietly turned this into an ownership or enablement check would pass every other
+test in this file"*.
+
+The **refuting** lens — the second critic the bindings authorise only on a sacred
+path — found the ownership half of that sentence false in one line:
+
+```dart
+bool taskExists(String name) => readTask(name)?.runsAsCurrentUser ?? false;
+```
+
+**All 63 tests passed.** The fixture named "somebody else registered" is planted
+with `schtasks /create /tr` and no `/RU`, so its principal is *this* account and
+`runsAsCurrentUser` is `true` for it. Measured while settling it: an unelevated
+single account cannot plant anything else — a `GroupId` principal and an empty
+`<Principal>` are both refused with access denied — so the state that would kill
+the mutation is **unreachable from the suite by construction**, the #24 shape
+recurring one ticket later.
+
+Worse, and also from the refuter: neither of my mutations touched the code the
+ticket actually changed. Reverting the headline change itself — restoring the
+unconditional root fetch to `_withFolder` — left the suite green. **Both of
+#15's acceptance criteria were invisible to all 428 tests.** The only evidence
+for either is a benchmark and a cold-process probe, neither of which lives in
+the repo.
+
+The two mutations were not worthless: they proved the group was not vacuous. They
+were just drawn from the same enumeration as the tests, so they could not reach
+what that enumeration had missed.
+
+**Consequence:** a mutation is written by asking *"what wrong implementation
+would a later reader plausibly write?"* — not by inverting the assertion just
+made. And when a test cannot reach a state, the comment says so with the
+measurement that establishes it, rather than claiming a coverage the fixture
+cannot deliver. This is the entry that earns the refuting lens its cost: the
+gap-hunting lens graded the same area `CONFIRMED` on documentation only and did
+not try the mutation.
