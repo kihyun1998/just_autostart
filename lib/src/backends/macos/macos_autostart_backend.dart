@@ -8,6 +8,15 @@ import '../../macos_options.dart';
 import 'launch_agent_plist.dart';
 import 'launchctl.dart';
 
+/// `ENOENT` — nothing at the path resolves to a file.
+///
+/// Measured on macOS 14.5 (#22) for the three shapes that reach this package:
+/// a missing file, a dangling symlink, and a missing directory component all
+/// report `2`. The neighbouring failures are distinct and must not be folded in
+/// with it: an unreadable file is `13`, a directory read as a file is `21`, and
+/// a symlink loop is `62`.
+const int _pathDoesNotResolve = 2;
+
 /// Registers a program at login through a launchd **user agent**.
 ///
 /// The registration is a property list file in the user's `LaunchAgents`
@@ -215,7 +224,9 @@ final class MacosAutostartBackend implements AutostartBackend {
 
   /// Removes this application's launch agent, if one is present.
   ///
-  /// Idempotent: removing what was never written is not an error.
+  /// Idempotent: removing what was never written is not an error, and neither
+  /// is losing the race to remove it — a file that goes away mid-operation
+  /// leaves nothing to report.
   ///
   /// The `LaunchAgents` directory is a **shared namespace**, and — critically —
   /// launchd identifies a job by the `Label` **inside** the file, not by the
@@ -223,28 +234,123 @@ final class MacosAutostartBackend implements AutostartBackend {
   /// while belonging to a different agent, so deleting on the file name alone
   /// would destroy their registration with no way back (a sacred path). The
   /// guard is that the file's internal `Label` must equal ours before it is
-  /// removed. A file we cannot read as ours — a foreign label, or a plist too
-  /// corrupt to parse — is left in place rather than deleted or raised.
+  /// removed. A file we cannot read as ours — a foreign label, a plist too
+  /// corrupt to parse, or something that is not a regular file at all — is left
+  /// in place rather than deleted or raised.
   ///
   /// Matching the label rather than the path means a registration whose binary
   /// *moved* is still ours to remove — it is the same launchd job — which is the
   /// registration `enable()` would otherwise leave running.
+  ///
+  /// **The guard is established twice, and the second time is the load-bearing
+  /// one.** `deleteSync` acts on the *path*; the check acts on the *bytes*. So
+  /// what matters is not that a check happened but how much can run between the
+  /// last one and the unlink — and a `launchctl bootout` has to run in there
+  /// (see below). Measured on macOS 14.5 with `dart compile exe`, one operation
+  /// per fresh process, which is the shape a consumer actually runs (#22):
+  ///
+  /// | inside the window | before | after |
+  /// | --- | --- | --- |
+  /// | first `parseLaunchAgentPlist` | 235 µs | — |
+  /// | `id -u`, resolving `gui/<uid>` for the first spawn | 1,533 µs | — |
+  /// | `launchctl bootout` | 1,626 µs | — |
+  /// | comparing the second read against the first | — | < 1 µs |
+  /// | `deleteSync` | 51 µs | 51 µs |
+  /// | **total, measured end to end** | **~3,445 µs** | **49 µs** |
+  ///
+  /// 56 µs in the case where the bytes changed and the guard re-parses, on the
+  /// 533-byte plist this package writes. Without `activateImmediately` the old
+  /// window was 286 µs rather than 3,445, since only the two spawns are gated —
+  /// the option changed the window's size, never whether there was one.
+  ///
+  /// The arithmetic is not the argument, though, and an earlier draft of this
+  /// ticket leaned on it wrongly in two ways worth recording. It compared the
+  /// residual against the ~2,400 µs #16 left on the Windows Task Scheduler
+  /// path, as though that were a bar — but `deleteTaskIf`'s own comment says
+  /// that figure is *the floor that API allows*, accepted because it could not
+  /// be removed, not a width judged safe. And it read the *without*-activation
+  /// window as "a few microseconds of Dart file I/O"; it is 286 µs, and the
+  /// defect was never scoped to that option.
+  ///
+  /// **The real reason is that the window's tail was unbounded.** `existsSync`
+  /// is not a regular-file test: it is `true` for a FIFO, and
+  /// `readAsStringSync` on a FIFO blocks until a writer appears, which may be
+  /// never (reproduced, #22). `Process.runSync` has no timeout either. So the
+  /// old shape could park an irreversible unlink behind an unbounded wait. What
+  /// this method now guarantees is bounded: between the last look and the
+  /// unlink there is no subprocess and no call that can block.
+  ///
+  /// It is still not atomic, and cannot be. An atomic form needs the file's
+  /// *identity* rather than its path — open, verify from the handle, unlink
+  /// that inode — and every route to that is a syscall Dart does not expose
+  /// (`FileStat` carries no inode; `RandomAccessFile` cannot unlink). Closing
+  /// it would mean FFI in a backend that deliberately has none.
   @override
   Future<void> disable() async {
     final file = _plistFile;
     if (!file.existsSync()) return;
-    if (!_isOurs(file)) return;
+
+    final registered = _readRegistration(file);
+    if (registered == null || !_isOurLabel(registered)) return;
 
     // Before the file goes: `launchctl bootout` names a job launchd resolved
     // from this plist, so deleting it first would leave a running job with
     // nothing to unload it by until the next login. The ownership guard above
     // governs this too — booting out a label this application does not own
     // would stop a third party's running agent.
-    if (options.activateImmediately) launchctl.bootout(config.label);
+    //
+    // Unconditional, rather than gated on `activateImmediately`. That option
+    // describes *this backend instance*, not the registration: an application
+    // that enabled with it and disables through a default-constructed backend
+    // would otherwise delete the file while the job stayed loaded — which is
+    // verbatim the harm the ordering above exists to prevent, and it leaves
+    // `isEnabled()` false while `isRunningNow()` stays true with no operation
+    // able to reconcile them. Booting out a label that is not loaded is a
+    // measured no-op (exit 3, "No such process"), so the cost of being right
+    // here is one ~1.6 ms spawn on a rare, deliberate operation.
+    launchctl.bootout(config.label);
+
+    // Re-establish the guard. The one above is now stale by a process spawn,
+    // and it is the *only* thing standing between a third party's plist and an
+    // unlink with no undo.
+    final current = _readRegistration(file);
+    if (current == null) return;
+    // Byte-identical to what the check above accepted, so that check still
+    // stands and nothing needs parsing inside the window — which is the common
+    // case and the one worth making cheap, since the parser is linear in the
+    // file's size and re-parsing unconditionally would let whatever is at the
+    // path decide how long we sit here.
+    //
+    // It falls back to a full ownership check rather than refusing on any
+    // difference, because a concurrent `enable()` legitimately rewrites this
+    // file under the same label; refusing that would leave this application's
+    // own registration in place while `disable()` reported success. The
+    // residual that buys: a plist swapped for a *large* one still carrying our
+    // label is re-parsed inside the window, so the width is content-dependent
+    // in exactly the case an adversary would choose. Bounded, unlike the
+    // subprocess it replaced, but not constant.
+    if (current != registered && !_isOurLabel(current)) return;
 
     try {
       file.deleteSync();
     } on FileSystemException catch (error) {
+      // Someone else removed it between the guard above and here. `disable()`'s
+      // contract is that nothing registered means nothing to do, and that has
+      // to hold for the racing case too or two concurrent calls make the loser
+      // throw.
+      //
+      // **The suite cannot reach this branch, and deleting it stays green.**
+      // Reaching it needs the file to go away inside the ~50 µs between the
+      // guard's read and this unlink, and there is deliberately no seam in
+      // there — a hook at that point would be the blocking call this whole
+      // method exists to keep out of the window. The test that looks like it
+      // covers this ("is silent when the plist vanishes during the bootout")
+      // does not: it removes the file during `bootout`, so the guard above
+      // returns first and this line never runs. Mutation-checked, not assumed
+      // — making this errno fatal again left all 87 tests passing. Kept
+      // because production can reach what the suite cannot, and recorded here
+      // rather than claimed as covered (`lessons.md` #24, #29).
+      if (error.osError?.errorCode == _pathDoesNotResolve) return;
       throw AutostartOsException(
         operation: 'remove the LaunchAgent plist',
         detail: error.message,
@@ -253,17 +359,52 @@ final class MacosAutostartBackend implements AutostartBackend {
     }
   }
 
-  /// Whether [file] is the launch agent this application registered.
+  /// The contents of the registration at [file], or `null` when there is
+  /// nothing there this package may treat as one.
+  ///
+  /// `null` covers two cases that are both "not a registration of ours to
+  /// touch", never "a failure to report":
+  ///
+  /// - **Not a regular file.** `File.existsSync()` returns `true` for a FIFO
+  ///   and for a character device, and `readAsStringSync` on a FIFO blocks
+  ///   until a writer appears — for ever, if none does (reproduced on macOS
+  ///   14.5, #22). Only a regular file can be a launch agent, so the type is
+  ///   checked before anything opens the path. This is what bounds the window
+  ///   in [disable]; without it a re-read is a re-hang.
+  /// - **The path no longer resolves.** Not only "our file was deleted": a
+  ///   dangling symlink and a vanished directory component report the same
+  ///   `errno`, and all three mean there is nothing to remove.
+  ///
+  /// Every **other** read failure is raised as a typed [AutostartOsException].
+  /// Reporting an unreadable plist at this application's own label as "not
+  /// ours" would leave the registration in place while `disable()` returned
+  /// success — the swallowed-failure defect this package refuses — and letting
+  /// the raw `FileSystemException` escape would break the sealed hierarchy a
+  /// caller switches over.
+  String? _readRegistration(File file) {
+    try {
+      if (file.statSync().type != FileSystemEntityType.file) return null;
+      return file.readAsStringSync();
+    } on FileSystemException catch (error) {
+      if (error.osError?.errorCode == _pathDoesNotResolve) return null;
+      throw AutostartOsException(
+        operation: 'read the LaunchAgent plist',
+        detail: error.message,
+        errorCode: error.osError?.errorCode,
+      );
+    }
+  }
+
+  /// Whether [plistXml] is the launch agent this application registered.
   ///
   /// Weaker than [isEnabled]: it asks only "is this our job", by the launchd
   /// identity (the internal `Label`), so a disabled or stale-but-ours agent is
-  /// still ours to remove. A file too corrupt to parse is treated as not ours —
-  /// the safe direction, since deleting an unreadable stranger's file is the
-  /// harm this guard exists to prevent.
-  bool _isOurs(File file) {
+  /// still ours to remove. A document too corrupt to parse is treated as not
+  /// ours — the safe direction, since deleting an unreadable stranger's file is
+  /// the harm this guard exists to prevent.
+  bool _isOurLabel(String plistXml) {
     try {
-      return parseLaunchAgentPlist(file.readAsStringSync()).label ==
-          config.label;
+      return parseLaunchAgentPlist(plistXml).label == config.label;
     } on MalformedRegistrationException {
       return false;
     }

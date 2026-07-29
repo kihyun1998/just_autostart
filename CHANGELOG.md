@@ -62,6 +62,17 @@ Unreleased.
 - `disable()` on macOS removes a plist only when its internal `Label` is this
   application's — launchd identifies a job by that label, not by the file name,
   so a third party's agent that merely shares the file name is left untouched.
+  The check is made **twice**, the second time immediately before the file is
+  removed: a `launchctl` call runs between them, and the deletion acts on the
+  path rather than on the bytes the first check read. Measured on macOS 14.5,
+  the gap between the last look and the removal falls from ~3,445 µs to 49 µs.
+  It is also now *bounded*: `disable()` no longer reads anything that can block
+  indefinitely, so a FIFO planted at the plist path is left alone instead of
+  hanging the call.
+- `disable()` on macOS no longer throws when the plist disappears underneath it,
+  so two concurrent calls no longer make the loser fail. A plist it cannot
+  *read* — as opposed to one that is absent or foreign — is still reported as a
+  typed `AutostartOsException` rather than silently treated as somebody else's.
 - `MacosAutostartOptions` configures **how** launchd runs the agent: restart on
   exit (`keepAlive`), standard output and error paths, a working directory, and
   environment variables. A login agent inherits none of a login shell's
@@ -72,7 +83,12 @@ Unreleased.
   defaults.
 - `activateImmediately` starts the agent in the **current** session on
   `enable()`, for a user who has just switched a toggle on and expects it to
-  work now. `disable()` removes it from the session before deleting the plist.
+  work now. `disable()` removes the agent from the session before deleting the
+  plist **whether or not this option is set**: the option describes the backend
+  instance rather than the registration, so gating the removal on it let an
+  application that enabled with it, and disabled without it, delete the file
+  while the job stayed loaded — with nothing able to unload it by name until the
+  next login.
   A failure to start it now does **not** throw: the registration is written and
   the agent starts at the next login regardless. `isRunningNow()` reports
   whether it is actually running, read from launchd rather than remembered —

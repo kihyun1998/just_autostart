@@ -416,6 +416,177 @@ void main() {
 
       expect(corrupt.existsSync(), isTrue);
     });
+
+    test('re-checks ownership after the bootout, and refuses a swap', () async {
+      // The load-bearing test for #22. The first guard reads the *bytes*; the
+      // delete acts on the *path*. Between them `disable()` spawns a process,
+      // measured at ~3.2 ms of the window on macOS 14.5, so a plist that
+      // becomes somebody else's in that gap would be deleted by a check that
+      // never saw it. FakeLaunchctl.onBootout is the only seam that can move
+      // the file at exactly that moment.
+      final launchctl = FakeLaunchctl();
+      final b = backend(launchctl: launchctl);
+      await b.enable();
+
+      final file = plistFile('dev.justautostart.test');
+      launchctl.onBootout = () => file.writeAsStringSync(
+        generateLaunchAgentPlist(
+          label: 'com.vendorx.updater',
+          executablePath: realExecutable,
+          args: const [],
+        ),
+      );
+
+      await b.disable();
+
+      expect(
+        file.existsSync(),
+        isTrue,
+        reason: 'the second guard must refuse a plist that became foreign',
+      );
+      expect(
+        parseLaunchAgentPlist(file.readAsStringSync()).label,
+        'com.vendorx.updater',
+      );
+    });
+
+    test('still removes an agent rewritten under our own label', () async {
+      // The other half of the guard above, and the reason it falls back to a
+      // label check rather than refusing on any byte difference: a concurrent
+      // enable() rewrites the file with the same Label. Refusing that would
+      // leave our own registration in place while disable() reported success.
+      final launchctl = FakeLaunchctl();
+      final b = backend(launchctl: launchctl);
+      await b.enable();
+
+      final file = plistFile('dev.justautostart.test');
+      launchctl.onBootout = () => file.writeAsStringSync(
+        generateLaunchAgentPlist(
+          label: 'dev.justautostart.test',
+          executablePath: realExecutable,
+          args: const ['--rewritten'],
+        ),
+      );
+
+      await b.disable();
+
+      expect(file.existsSync(), isFalse);
+    });
+
+    test('boots out even when immediate activation was not asked for', () async {
+      // `activateImmediately` describes the backend instance, not the
+      // registration. An application that enabled with it and disables through
+      // a default-constructed backend would otherwise delete the plist while
+      // the job stayed loaded, with nothing able to unload it by name until the
+      // next login — the harm the bootout-before-delete order exists to
+      // prevent.
+      final launchctl = FakeLaunchctl()..loaded = true;
+      final b = backend(launchctl: launchctl);
+      await b.enable();
+
+      await b.disable();
+
+      expect(launchctl.sessionCalls, ['bootout:dev.justautostart.test']);
+      expect(launchctl.loaded, isFalse);
+    });
+
+    test('leaves a FIFO at our path alone instead of blocking on it', () async {
+      // existsSync() is true for a FIFO, and readAsStringSync on one blocks
+      // until a writer appears — which may be never. Reproduced on macOS 14.5
+      // (#22), and it sits inside the window guarding an irreversible unlink.
+      //
+      // Run in a child process, because the block is *synchronous*: it freezes
+      // the isolate, so an in-process `Future.timeout` never gets scheduled to
+      // fire and the defect would hang this suite instead of failing it.
+      // Removing the regular-file guard and running this test is what
+      // established that — see disable_fifo_probe.dart.
+      const label = 'dev.justautostart.fifo';
+      final path = plistFile(label).path;
+      expect(Process.runSync('mkfifo', [path]).exitCode, 0);
+      addTearDown(() => Process.runSync('rm', ['-f', path]));
+
+      final probe = await Process.start(Platform.resolvedExecutable, [
+        'run',
+        'test/macos/disable_fifo_probe.dart',
+        scratch.path,
+        label,
+      ]);
+      addTearDown(probe.kill);
+
+      final exitCode = await probe.exitCode.timeout(
+        // Under the runner's own 30 s per-test timeout, so a hang fails here
+        // with the reason below rather than as an anonymous runner timeout.
+        const Duration(seconds: 15),
+        onTimeout: () {
+          probe.kill();
+          return -1;
+        },
+      );
+
+      expect(
+        exitCode,
+        0,
+        reason: 'disable() must return rather than block on a FIFO',
+      );
+      expect(
+        FileSystemEntity.typeSync(path),
+        FileSystemEntityType.pipe,
+        reason: 'a FIFO is not a registration and must be left in place',
+      );
+    });
+
+    test('is silent when the plist vanishes during the bootout', () async {
+      // Two concurrent disable() calls, or a user deleting the file by hand
+      // mid-operation. What this pins is the *guard's* tolerance: the file is
+      // gone by the time the second guard reads it, so disable() returns there
+      // and never reaches the delete.
+      //
+      // It does **not** cover the delete's own ENOENT branch, which needs the
+      // file to vanish in the ~50 µs after the guard — a window with no seam in
+      // it by design. Making that branch fatal leaves this test green; the
+      // backend's comment on it says so rather than claiming a coverage this
+      // fixture cannot deliver (`lessons.md` #24).
+      final launchctl = FakeLaunchctl();
+      final b = backend(launchctl: launchctl);
+      await b.enable();
+
+      final file = plistFile('dev.justautostart.test');
+      launchctl.onBootout = file.deleteSync;
+
+      await b.disable();
+
+      expect(file.existsSync(), isFalse);
+    });
+
+    test(
+      'raises a typed failure for a plist it cannot read',
+      () async {
+        // Not "not ours": an unreadable file at this application's own label is a
+        // registration that would be left in place while disable() reported
+        // success — the swallowed-failure defect this package refuses. It must
+        // also not escape as a raw dart:io FileSystemException, which is outside
+        // the sealed hierarchy a caller switches over.
+        final file = plistFile('dev.justautostart.test');
+        await backend().enable();
+        expect(Process.runSync('chmod', ['000', file.path]).exitCode, 0);
+        addTearDown(() => Process.runSync('chmod', ['644', file.path]));
+
+        await expectLater(
+          backend().disable(),
+          throwsA(
+            isA<AutostartOsException>().having(
+              (e) => e.errorCode,
+              'errorCode',
+              13,
+            ),
+          ),
+        );
+        expect(file.existsSync(), isTrue);
+      },
+      skip: Platform.environment['USER'] == 'root'
+          ? 'root reads a 0000 file regardless of its mode'
+          : null,
+    );
   });
 
   group('isEnabled', () {

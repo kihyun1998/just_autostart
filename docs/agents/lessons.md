@@ -845,3 +845,68 @@ it broke a mutation claim.
 spans and check that the measurement you have spans the same two. And when a
 ticket's stated justification collapses and a new one is reached for, the new one
 is a *claim to verify*, not a rescue.
+
+---
+
+## #29 — the benchmark that measured the harness, and the test that could only hang — Steps 4, 5
+
+**Rule it proves:** a warm loop is not the operation, and a *synchronous* block
+cannot be asserted in the process it blocks.
+
+#22 asked how wide the window between `disable()`'s ownership check and its
+`deleteSync` really is. The first answer came from a 200-iteration loop under
+`dart run`, and every part of it was wrong in a different direction:
+
+| | warm loop, `dart run` | one call, fresh AOT process |
+| --- | --- | --- |
+| first `parseLaunchAgentPlist` | 146 µs | 235 µs |
+| second `parseLaunchAgentPlist` | 146 µs | **32 µs** |
+| `id -u`, the first spawn | **not counted at all** | 1,533 µs |
+| `launchctl bootout` | 3,054 µs | 1,626 µs |
+
+Three separate errors. The loop measured a **steady state a real consumer never
+reaches** — `disable()` runs each step once, in a process that then exits, so
+the *first* parse is the one that happens and it is 7× the loop's. It ran under
+**JIT**, where the same parser is 6,454 µs cold against 235 µs built with
+`dart compile exe` — which is what this package's consumers ship. And it timed
+`launchctl.bootout` as one spawn, when `SystemLaunchctl.bootout` resolves
+`gui/<uid>` first: on a process whose only autostart call is `disable()`,
+nothing has warmed that memo, so **`id -u` runs inside the window too**. Both
+lenses found that last one independently; neither found the first two.
+
+The lesson #28 pattern, one ticket later and with the sign flipped: there the
+number flattered the change, here it flattered the *status quo* by understating
+the defect. Same root — the quantity measured was not the quantity claimed.
+
+**The second half is about the test.** The pass also found that
+`File.existsSync()` is `true` for a **FIFO**, and that `readAsStringSync` on one
+blocks until a writer appears. The first test written for it was:
+
+```dart
+await backend().disable().timeout(const Duration(seconds: 5));
+```
+
+That timeout can never fire. The block is synchronous, so the isolate never
+returns to the event loop that would deliver the timeout — the test does not
+fail, it **hangs the suite**, and the mutation run that removed the guard is
+what exposed it (a 10-minute wall-clock timeout, not a red test). A hang is the
+worst possible failure shape: on CI it is indistinguishable from a stuck runner.
+
+The working version starts a child process and waits on *its* exit code, the
+shape `hidden_window_probe.dart` already uses for a different unobservable.
+
+**One mutation survived, and it was right to.** Making the `deleteSync` ENOENT
+tolerance fatal again left all 87 tests green: reaching that branch needs the
+file to vanish in the ~50 µs between the guard's read and the unlink, and there
+is deliberately **no seam in there** — a hook at that point would be the
+blocking call the whole change exists to keep out of the window. The test that
+looks like it covers it removes the file during `bootout`, so the guard returns
+first and the line never runs. Kept, with the comment saying so: the #24 shape
+again, and the fourth time in this repo that a comment was about to claim a
+coverage the fixture could not deliver.
+
+**Consequence:** a performance claim is measured one operation per fresh
+process, on the compiled artefact, or it is a claim about the benchmark. And
+before trusting a test that asserts something *does not hang*, check that the
+mechanism could fire at all — `Future.timeout` cannot interrupt synchronous
+work.

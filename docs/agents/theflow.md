@@ -283,6 +283,34 @@ Add to this list when a pass finds another.
   agent's own `Label` — and `disable()` decides ownership by that value, so a
   foreign agent carrying such a variable could be deleted (#10, reproduced).
   Top-level keys are read only at nesting depth one.
+- **`File.existsSync()` is not a regular-file test, and the difference can hang
+  the process.** Measured (#22): it returns `true` for a **FIFO** and for a
+  **character device**, and `false` for a directory, a symlink to a directory, a
+  dangling symlink and a symlink loop. `readAsStringSync` on a FIFO then
+  **blocks until a writer appears** — for ever, if none does. It is a
+  *synchronous* block, so it freezes the isolate and a `Future.timeout` around
+  it never fires; the only way to assert on it is from another process
+  (`test/macos/disable_fifo_probe.dart`). Anything reading a path a third party
+  can write checks `statSync().type` first.
+- **The `errno` values a plist path produces are distinct, and folding them
+  together loses the one that matters.** Measured (#22): a missing file, a
+  **dangling symlink**, and a missing directory component all give **2**; an
+  unreadable file gives **13**; a directory read as a file gives **21**; a
+  symlink loop gives **62**. So `2` means "nothing there to act on" — safe to
+  treat as absent — while `13` is a registration this package cannot read, which
+  must be raised rather than reported as somebody else's.
+- **`readAsStringSync` follows a symlink; `deleteSync` unlinks the link.**
+  Measured (#22). So `enable()` through a symlinked plist path writes the file
+  at the link's *target* — outside the directory this package manages — while
+  `disable()` removes only the link and leaves that file behind for good. The
+  same property bounds the harm on the deletion path in the useful direction:
+  `unlink(2)` never follows the final component, so this package cannot be
+  induced to destroy a stranger's file somewhere else. Not handled; recorded.
+- **The first `Process.runSync` in a process costs far more than the steady
+  state.** Measured (#22), AOT, fresh process: the first `id -u` is **1,533 µs**
+  against ~1,300 µs for a later spawn; under `dart run` the same first spawn is
+  **9,228 µs**. Anything that measures a spawn in a warm loop is measuring a
+  case that a single-shot CLI never reaches.
 - **A file that exists is not a file that launches.** `File.existsSync()` is
   `true` for a path with no execute bit, but launchd's `execvp` fails at login
   with `EACCES` and nothing starts — reproduced on macOS (a `chmod 644` file:
@@ -398,6 +426,16 @@ loop is N/A on the same ground.** All of this becomes live at the first publish.
 nothing about whether Windows or launchd will *accept* what we wrote. Every I/O
 layer above cross-reads with an OS-native tool for exactly this reason. A test
 that only round-trips through our own code is a feel test.
+
+**Trap — a warm loop is not the operation.** A benchmark that runs one call
+200 times measures a steady state a real consumer never reaches: `disable()`
+runs each of its steps roughly *once*, in a process that then exits. Measured
+(#22): the first `parseLaunchAgentPlist` is 7× the second, and the first
+`Process.runSync` is ~20% above a later one. **And measure the AOT binary** —
+under `dart run` the first parse was 6,454 µs against **235 µs** for the same
+code built with `dart compile exe`, which is what a consumer ships. A figure
+taken from a JIT warm loop can be wrong in both directions at once. One
+operation per fresh process, compiled, or the number is about the harness.
 
 **Trap — CI cannot verify the thing the package is for.** A green matrix proves
 "the bytes are what we intended", never "the program starts at login". Actual

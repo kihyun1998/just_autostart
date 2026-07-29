@@ -153,6 +153,12 @@ if (!await backend.isRunningNow()) {
 }
 ```
 
+The option is not symmetric, on purpose: `disable()` unloads the agent from the
+current session **always**, whether or not you set it. The option describes the
+object you are calling through, not the registration on disk — so disabling
+through a differently-configured instance would otherwise delete the plist and
+leave the job running, with no way to unload it by name until the next login.
+
 ### You supply the executable path
 
 `executablePath` is required and is never inferred. `Platform.resolvedExecutable`
