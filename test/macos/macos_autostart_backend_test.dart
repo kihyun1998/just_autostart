@@ -286,6 +286,31 @@ void main() {
       expect(strays, isEmpty);
     });
 
+    test('leaves no temporary file behind when the write fails', () async {
+      // The failure path of the same rule. A directory in the slot is the one
+      // shape `renameSync` correctly refuses (errno 21, measured #23), which
+      // makes the cleanup branch reachable — without a trigger like this it
+      // would be a claim no test could check.
+      const label = 'dev.justautostart.test';
+      Directory(plistFile(label).path).createSync();
+
+      await expectLater(
+        backend(label: label).enable(),
+        throwsA(isA<AutostartOsException>()),
+      );
+
+      final strays = scratch
+          .listSync()
+          .map((e) => e.path.split('/').last)
+          .where((n) => n != '$label.plist')
+          .toList();
+      expect(
+        strays,
+        isEmpty,
+        reason: 'a failed enable() must not litter a shared directory',
+      );
+    });
+
     test('surfaces an unwritable directory as an OS exception', () async {
       // Point the directory under a regular file: creating it must fail.
       final blocker = File('${scratch.path}/blocker')..writeAsStringSync('x');

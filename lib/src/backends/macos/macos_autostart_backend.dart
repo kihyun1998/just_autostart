@@ -176,6 +176,16 @@ final class MacosAutostartBackend implements AutostartBackend {
   /// The permissions are set on the temporary file, so the plist is never
   /// visible in `LaunchAgents` carrying the group/other write bits launchd
   /// silently refuses (#13).
+  ///
+  /// **One behaviour this changes, and why it is not worth avoiding.** Writing
+  /// needs the *directory* to be writable, where writing through an existing
+  /// file needed only the file. So a read-only `LaunchAgents` holding a
+  /// writable plist used to accept `enable()` and now raises
+  /// `AutostartOsException` code 13 (measured, #23). That setup was never one
+  /// this package could serve: `disable()` needs the same directory write to
+  /// unlink, and `enable()` already called `createSync` on it. Failing at the
+  /// write is the honest version of a state that could not be maintained
+  /// anyway.
   void _writeRegistration(String xml) {
     // Dot-prefixed and not ending in `.plist`, so a temp stranded by a crash
     // is not a shape launchd would try to load. `launchd.plist(5)` says only
