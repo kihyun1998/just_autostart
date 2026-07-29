@@ -153,6 +153,14 @@ if (!await backend.isRunningNow()) {
 }
 ```
 
+One thing to know if you keep launch agents in a dotfiles repo: this package
+treats `~/Library/LaunchAgents/<label>.plist` as **its** slot. If that path is a
+symlink, `enable()` replaces the link with a real file rather than writing
+through it — your linked file is left exactly as it was, but it is no longer
+what launchd loads. Writing through the link instead would put the plist
+somewhere you never named, so this is the deliberate choice; the alternative was
+refusing to enable at all, which the calling application has no way to act on.
+
 The option is not symmetric, on purpose: `disable()` unloads the agent from the
 current session **always**, whether or not you set it. The option describes the
 object you are calling through, not the registration on disk — so disabling

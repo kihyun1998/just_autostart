@@ -313,13 +313,37 @@ Add to this list when a pass finds another.
   `launchctl bootstrap gui/<uid> <symlink>` returned 0 and the job was loaded.
   So a symlinked plist path is a *working* registration, which is what makes
   the read/delete asymmetry below reachable rather than theoretical.
-- **`readAsStringSync` follows a symlink; `deleteSync` unlinks the link.**
-  Measured (#22). So `enable()` through a symlinked plist path writes the file
-  at the link's *target* — outside the directory this package manages — while
-  `disable()` removes only the link and leaves that file behind for good. The
-  same property bounds the harm on the deletion path in the useful direction:
-  `unlink(2)` never follows the final component, so this package cannot be
-  induced to destroy a stranger's file somewhere else. Not handled; recorded.
+- **`File.deleteSync` is not `unlink(2)` — it resolves the path first.**
+  Measured (#23): it removes a symlink-to-a-regular-file, but **fails and leaves
+  the link in place** for a dangling symlink (errno 2), a symlink loop (errno 2),
+  a symlink to `/dev/null` (errno 2), and a symlink to a directory (errno 21).
+  `Link(path).deleteSync()` unlinks any of them but fails with errno 22 on a
+  regular file. So "remove whatever is at this name" has **no single expression**
+  in `dart:io`, and the natural one silently no-ops on exactly the shapes that
+  matter — errno 2 is this package's "nothing there to act on".
+- **`renameSync` is the primitive that does not follow.** `man 2 rename`: *"If
+  the final component of old is a symbolic link, the symbolic link is renamed,
+  not the file or directory to which it points"*, and it *"guarantees that an
+  instance of new will always exist, even if the system should crash"*. Measured
+  (#23) to replace every slot shape except a directory (errno 21, correctly
+  refused). This is why `enable()` writes a same-directory temp and renames it
+  over the slot.
+- **`writeAsStringSync` into a FIFO does not block, and silently discards.**
+  Measured (#23): Dart opens `FileMode.write` as `O_RDWR`, so unlike the read
+  path there is no hang — the bytes vanish into the pipe buffer, `chmod`
+  succeeds, and `enable()` **returned success while `isEnabled()` stayed false
+  for ever**. The package's own worst failure shape, on the write path. The FIFO
+  *hang* is a read-side property only; do not carry that intuition across.
+- **`readAsStringSync` follows a symlink.** Measured (#22). So a read decides
+  ownership from the *target's* bytes, which is correct — launchd resolves the
+  link too — while the deletion below acts on the name. **Settled in #23** for
+  the write half, which used to sit here as "not handled; recorded": `enable()`
+  no longer writes through the link. The clause this entry originally carried,
+  *"`deleteSync` unlinks the link"*, was **too generous to `deleteSync`** and is
+  corrected in the entry above — it holds only when the link resolves to a
+  regular file. What genuinely bounds the deletion path is `unlink(2)` never
+  following the final component, so this package cannot be induced to destroy a
+  stranger's file elsewhere; that half stands.
 - **The first `Process.runSync` in a process costs far more than the steady
   state.** Measured (#22), AOT, fresh process: the first `id -u` is **1,533 µs**
   against ~1,300 µs for a later spawn; under `dart run` the same first spawn is

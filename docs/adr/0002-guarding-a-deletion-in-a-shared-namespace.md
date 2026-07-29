@@ -1,6 +1,8 @@
 # ADR-0002 — Guarding a deletion in a shared namespace
 
 **Status:** Accepted — 2026-07-29
+**Amended:** 2026-07-29 — #23 settled the write side; W1 and W2 added under
+"What the rules do not decide", which previously declared it out of scope.
 **Supersedes:** nothing
 **Promoted from:** issue #22, per theflow's promotion rule (three triggers: that
 issue's stated premise measured false before work started; the reference
@@ -104,8 +106,47 @@ became absent mid-operation.
 
 They govern removal. They say nothing about whether `enable()` may override a
 user's veto — that is a separate `[product]` decision recorded in
-`docs/agents/theflow.md` — and nothing about the *write* side of a mechanism.
-Issue #23 is a write-side question and this record does not settle it.
+`docs/agents/theflow.md`.
+
+**The write side has since been settled by #23, and its answer is recorded here
+because two of the rules above would otherwise be misread onto it.**
+
+**W1 — `enable()` claims its slot without an ownership guard, and that is
+deliberate.** All three mechanisms overwrite whatever occupies their key:
+`windows_run_key_backend.dart:62-64` writes unconditionally, Task Scheduler
+registers with `TASK_CREATE_OR_UPDATE` (`task_scheduler.dart:297`, `:1324`), and
+the macOS backend replaces its plist. R1 is **not** violated, because R1 governs
+*removal* — a path whose whole purpose is destruction — while `enable()`'s
+purpose is to make this application's registration exist at a key the **caller
+chose**. `[product]`: the family agrees, and this is recorded as a decision
+rather than left as the omission it was. Its cost is real and stated: a caller
+who picks a label another application already uses destroys that registration,
+and no guard here would tell them apart from a stale copy of their own.
+
+Do **not** cite `windows_autostart_backend.dart:61-69` either way. That *is* a
+guarded deletion on an enable path, but it removes the **other mechanism's**
+registration at a key the caller never asked to write, and it reuses the
+ordinary `disable()` guard to do it. Different operation, precedent for neither
+side.
+
+**W2 — writing goes through a same-directory temp and `rename(2)`, and this is
+not the rename rejected below.** The rejected alternative moves a registration
+*away* to a private name before verifying it, on the **removal** path, and is
+refused for two reasons: it can clobber a file that arrived meanwhile, and a
+crash strands a third party's plist under a name launchd will not load. The
+write-path rename shares neither — the source is a name only this process knows,
+and a crash leaves the previous registration intact. Measured (#23):
+`File.deleteSync` resolves through symlinks and *fails* on a dangling symlink
+(errno 2), a symlink loop (errno 2) and a symlink to a directory (errno 21),
+leaving all three in place — so "remove the slot, then write" cannot be
+expressed in Dart and silently preserves the defect it appears to fix.
+
+The general form, and the reason this belongs in the record: **on both sides,
+the safe primitive is the one that does not follow the final path component.**
+`unlink(2)` for removal, `rename(2)` for writing. Anything that resolves the
+path — `existsSync`, `File.deleteSync`, `writeAsStringSync`, `chmod` — acts on
+whatever the name points at, which on a shared namespace is not necessarily
+ours.
 
 ## Evidence — the decisions this derives
 

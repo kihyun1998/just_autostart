@@ -205,6 +205,87 @@ void main() {
       );
     });
 
+    test('never writes outside the LaunchAgents directory', () async {
+      // The slot is a shared namespace and whatever occupies it may be a
+      // symlink the *end user* created — a plist kept in a dotfiles repo, say.
+      // Writing *through* it puts this package's bytes somewhere the caller
+      // never named. Measured on macOS 14.5 (#23): a dangling symlink is the
+      // sharpest case, because `existsSync()` is false for one, so any guard
+      // phrased as "remove what is there first" skips it and writes through
+      // anyway.
+      const label = 'dev.justautostart.test';
+      final outside = Directory('${scratch.path}/dotfiles')..createSync();
+      final target = '${outside.path}/$label.plist';
+      Link(plistFile(label).path).createSync(target);
+
+      await backend(label: label).enable();
+
+      expect(
+        File(target).existsSync(),
+        isFalse,
+        reason: 'enable() must not create a file at the link target',
+      );
+      expect(
+        FileSystemEntity.typeSync(plistFile(label).path, followLinks: false),
+        FileSystemEntityType.file,
+        reason: 'the slot itself must hold the registration',
+      );
+    });
+
+    test('replaces a symlinked slot without touching its target', () async {
+      // The other half: a link whose target exists and is somebody's real file.
+      // launchd does load a plist through a symlink (measured, #23), so this is
+      // a working setup being taken over — the link is destroyed, which is the
+      // cheap object, and the target is left exactly as it was.
+      const label = 'dev.justautostart.test';
+      final outside = Directory('${scratch.path}/dotfiles')..createSync();
+      final target = File('${outside.path}/$label.plist')
+        ..writeAsStringSync('TARGET-ORIGINAL');
+      Link(plistFile(label).path).createSync(target.path);
+
+      await backend(label: label).enable();
+
+      expect(target.readAsStringSync(), 'TARGET-ORIGINAL');
+      expect(
+        FileSystemEntity.typeSync(plistFile(label).path, followLinks: false),
+        FileSystemEntityType.file,
+      );
+      expect(await backend(label: label).isEnabled(), isTrue);
+    });
+
+    test('refuses a FIFO slot instead of reporting a false success', () async {
+      // Measured (#23): writing into a FIFO does **not** block — Dart opens
+      // `FileMode.write` as O_RDWR — so the bytes vanish into the pipe buffer,
+      // `chmod` succeeds, and `enable()` returned success while `isEnabled()`
+      // stayed false for ever. That is the failure this package exists not to
+      // have (`CLAUDE.md`; `lessons.md` #2): a registration reported live that
+      // can never launch. #22 closed this class on the read paths only.
+      const label = 'dev.justautostart.test';
+      final slot = plistFile(label).path;
+      expect(Process.runSync('mkfifo', [slot]).exitCode, 0);
+      addTearDown(() => Process.runSync('rm', ['-f', slot]));
+
+      await backend(label: label).enable();
+
+      expect(
+        FileSystemEntity.typeSync(slot, followLinks: false),
+        FileSystemEntityType.file,
+        reason: 'the FIFO must be replaced by a real registration',
+      );
+      expect(await backend(label: label).isEnabled(), isTrue);
+    });
+
+    test('leaves no temporary file behind in LaunchAgents', () async {
+      await backend().enable();
+
+      final strays = scratch
+          .listSync()
+          .map((e) => e.path.split('/').last)
+          .where((n) => n != 'dev.justautostart.test.plist')
+          .toList();
+      expect(strays, isEmpty);
+    });
+
     test('surfaces an unwritable directory as an OS exception', () async {
       // Point the directory under a regular file: creating it must fail.
       final blocker = File('${scratch.path}/blocker')..writeAsStringSync('x');
@@ -255,6 +336,24 @@ void main() {
       await backend().enable();
 
       expect(modeOf(file), '600');
+    });
+
+    test('does not inherit the mode of a symlink target', () async {
+      // The mode carried across belongs to the *registration being replaced*.
+      // A symlink is replaced rather than written through (#23), and its target
+      // is somebody else's file — propagating that file's mode into
+      // LaunchAgents would be taking a decision on their behalf. The link's own
+      // bits are meaningless to launchd either way.
+      final outside = Directory('${scratch.path}/dotfiles')..createSync();
+      final target = File('${outside.path}/$label.plist')
+        ..writeAsStringSync('placeholder');
+      Process.runSync('chmod', ['600', target.path]);
+      Link(plistFile(label).path).createSync(target.path);
+
+      await backend().enable();
+
+      expect(modeOf(plistFile(label)), isNot('600'));
+      expect(modeOf(target), '600', reason: 'their file is left alone');
     });
 
     test('isEnabled is false while the plist is group-writable', () async {

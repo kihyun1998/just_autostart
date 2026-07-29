@@ -910,3 +910,73 @@ process, on the compiled artefact, or it is a claim about the benchmark. And
 before trusting a test that asserts something *does not hang*, check that the
 mechanism could fire at all — `Future.timeout` cannot interrupt synchronous
 work.
+
+---
+
+## #30 — the reference's own line, transliterated, left the defect it appeared to fix — Steps 1, 5
+
+**Rule it proves:** prior art travels as a *direction*, not as an implementation.
+The premise that makes a line correct in one language is part of the line.
+
+#23 was filed with three candidate answers, all of them mine, none of them
+right. The routing table sends macOS plist questions to
+`sindresorhus/LaunchAtLogin`, which turned out to be no help at all — it never
+touches a plist file (`SMAppService` registers a bundle). The prior art that
+*did* exist was never in the table: **Homebrew**, which manages the same
+`~/Library/LaunchAgents` for every formula on the machine.
+`services/cli.rb:432-434`, read verbatim:
+
+```ruby
+rm service.dest if service.dest.exist?
+service.dest_dir.mkpath unless service.dest_dir.directory?
+cp T.must(temp.path), service.dest
+```
+
+**Unlink the slot, then copy into it** — never write through whatever occupies
+it. That is the right direction, and it is the whole answer to the ticket.
+
+Transliterating it is not. Measured on macOS 14.5, and both halves are needed:
+
+- `Pathname#exist?` and `File.existsSync()` both stat *through* a link, so both
+  are **false for a dangling symlink**;
+- `File.deleteSync` resolves the path and then **fails** — errno 2 for a
+  dangling symlink and a symlink loop, errno 21 for a symlink to a directory —
+  **leaving the link in place**. It is not `unlink(2)`. `Link(path).deleteSync()`
+  is, but that one fails with errno 22 on a regular file.
+
+So `if (slot.existsSync()) slot.deleteSync(); slot.writeAsStringSync(xml);`
+skips the guard on a dangling symlink, follows the link, and creates the plist
+outside the directory — **the exact defect in the ticket's own body**, now
+standing behind code that looks like it handles the case. And errno 2 is this
+repo's "nothing there to act on", so the failure is swallowed by its own
+convention.
+
+The mutation is the record: planting that shape leaves the suite red on *enable
+never writes outside the LaunchAgents directory*. The suite distinguishes the
+design from the reference's literal line, which is the only reason this entry
+is evidence rather than an anecdote.
+
+Ruby is fine, incidentally — `FileUtils.rm` unlinks a dangling symlink without
+complaint. The premise that does not travel is *"the language's delete removes
+a name"*. `lessons.md` #13 is the same shape with the subject changed: there, a
+sibling's DLL hardening was copied without its premise; here, a reference's file
+handling was.
+
+**What the ticket actually needed** was the primitive that does not follow the
+final component. `unlink(2)` is that on the removal side; `rename(2)` is that on
+the write side — *"If the final component of old is a symbolic link, the
+symbolic link is renamed"* — and it replaces every slot shape except a
+directory, which it correctly refuses.
+
+**One more thing the lens missed and the existing suite caught.** Writing
+through a temp means the file is *new*, so it takes the process umask instead of
+the mode of the registration it replaces — and `a stricter mode is preserved
+rather than loosened to 644` went red. That contract was recorded in a doc
+comment and nowhere else; the completeness pass had graded this same function
+"silently fixed". A test that pins a decision is worth more than the pass that
+walks past it.
+
+**Consequence:** when prior art supplies the answer, adopt the *property* it
+relies on and re-derive the call in this language. And on a shared namespace,
+prefer the primitive that acts on the **name** over the one that acts on what
+the name resolves to.

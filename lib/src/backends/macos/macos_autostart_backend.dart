@@ -113,7 +113,7 @@ final class MacosAutostartBackend implements AutostartBackend {
 
     try {
       launchAgentsDirectory.createSync(recursive: true);
-      _plistFile.writeAsStringSync(xml);
+      _writeRegistration(xml);
     } on FileSystemException catch (error) {
       throw AutostartOsException(
         operation: 'write the LaunchAgent plist',
@@ -121,8 +121,6 @@ final class MacosAutostartBackend implements AutostartBackend {
         errorCode: error.osError?.errorCode,
       );
     }
-
-    _restrictPermissions(_plistFile);
 
     launchctl.clearOverride(config.label);
     if (_isVetoedByUser()) {
@@ -135,6 +133,78 @@ final class MacosAutostartBackend implements AutostartBackend {
     }
 
     if (options.activateImmediately) _activate();
+  }
+
+  /// Writes [xml] into this application's slot, replacing whatever is there.
+  ///
+  /// **It writes a temporary file beside the slot and renames it over, rather
+  /// than writing to the slot directly.** The slot is a name in a shared
+  /// namespace, and what occupies it is not necessarily a regular file this
+  /// package put there. `writeAsStringSync` *follows* whatever it finds, so
+  /// writing directly sends this package's bytes wherever that points —
+  /// measured on macOS 14.5 (#23) in three shapes: a symlink to a file has its
+  /// **target's content replaced**, a **dangling** symlink has its target
+  /// **created**, and a hard link changes the other name's content. All three
+  /// write outside the one directory this package's identity scopes it to.
+  ///
+  /// `rename(2)` is the operation that does not follow: *"If the final
+  /// component of old is a symbolic link, the symbolic link is renamed, not the
+  /// file or directory to which it points."* So the link is replaced and its
+  /// target is left exactly as it was. It also *"guarantees that an instance of
+  /// new will always exist, even if the system should crash in the middle"* —
+  /// so there is no moment where the slot holds a half-written plist, which
+  /// `disable()` could never clean up (its guard cannot parse a truncated file,
+  /// so it would correctly refuse to remove it).
+  ///
+  /// **The alternative that looks equivalent and is not.** Removing the slot
+  /// first and then writing — which is what Homebrew does for this same
+  /// directory (`services/cli.rb:432-434`, `rm` then `cp`) — cannot be
+  /// expressed in Dart. `File.deleteSync` resolves the path, so it *fails* on
+  /// exactly the states that matter and leaves them in place: errno 2 for a
+  /// dangling symlink and a symlink loop, errno 21 for a symlink to a
+  /// directory. The guard would skip, the write would follow the link, and the
+  /// defect would survive behind code that looks like it handles the case.
+  ///
+  /// Note this is **not** the rename that `docs/adr/0002` rejects. That one
+  /// renames a registration *away* to a private name before verifying it, on
+  /// the removal path, and is refused because it can clobber a file that
+  /// arrived meanwhile and can strand a third party's plist under a name
+  /// launchd will not load. This renames a file *we just wrote* onto our own
+  /// slot: the source is a name only this process knows, and a crash leaves the
+  /// previous registration intact.
+  ///
+  /// The permissions are set on the temporary file, so the plist is never
+  /// visible in `LaunchAgents` carrying the group/other write bits launchd
+  /// silently refuses (#13).
+  void _writeRegistration(String xml) {
+    // Dot-prefixed and not ending in `.plist`, so a temp stranded by a crash
+    // is not a shape launchd would try to load. `launchd.plist(5)` says only
+    // that agents are *expected* to end in `.plist`, which is an expectation
+    // rather than a documented filter, so the name avoids the question instead
+    // of relying on the answer.
+    final temp = File(
+      '${launchAgentsDirectory.path}/.${config.label}.$pid.tmp',
+    );
+    try {
+      temp.writeAsStringSync(xml);
+      // The temp is a *new* file, so it takes the process umask rather than the
+      // mode of the registration it replaces. Writing to the slot directly used
+      // to preserve that mode for free; carrying it across is what keeps the
+      // recorded promise that a caller who made their agent `0600` keeps it
+      // private, which is otherwise the one thing this shape would lose.
+      _restrictPermissions(temp, inheriting: _existingSlotMode());
+      temp.renameSync(_plistFile.path);
+    } catch (_) {
+      // A failed write must not leave litter in a directory this package does
+      // not own outright. Best-effort: the original failure is what the caller
+      // needs, so a cleanup that also fails must not replace it.
+      try {
+        if (temp.existsSync()) temp.deleteSync();
+      } on FileSystemException {
+        // Nothing further to do; the rethrow below carries the real failure.
+      }
+      rethrow;
+    }
   }
 
   /// Clears the group and other **write** bits on the written agent.
@@ -153,10 +223,21 @@ final class MacosAutostartBackend implements AutostartBackend {
   /// `dart:io` has no `chmod`, so this shells out like the `launchctl` calls do
   /// — still no native code. A failure to restrict is raised rather than
   /// ignored: the registration would otherwise be one launchd will not load.
-  void _restrictPermissions(File file) {
+  ///
+  /// [inheriting] is the mode of the registration being replaced, when there is
+  /// one. It is applied *with the two write bits already cleared*, in the same
+  /// single `chmod`, so the deliberate-`0600` case survives being written
+  /// through a temporary file — see [_writeRegistration].
+  void _restrictPermissions(File file, {int? inheriting}) {
+    // 0x10 is group-write and 0x2 other-write, the pair [_isWorldWritable]
+    // reads back.
+    final argument = inheriting == null
+        ? 'go-w'
+        : (inheriting & ~0x12).toRadixString(8).padLeft(3, '0');
+
     final ProcessResult result;
     try {
-      result = Process.runSync('chmod', ['go-w', file.path]);
+      result = Process.runSync('chmod', [argument, file.path]);
     } on ProcessException catch (error) {
       throw AutostartOsException(
         operation: 'restrict permissions on the LaunchAgent plist',
@@ -171,6 +252,23 @@ final class MacosAutostartBackend implements AutostartBackend {
         errorCode: result.exitCode,
       );
     }
+  }
+
+  /// The permission bits of the registration currently in the slot, or `null`
+  /// when the slot does not already hold a regular file.
+  ///
+  /// Deliberately does **not** follow a symlink. A link is about to be
+  /// replaced rather than written through, and the mode that matters is the
+  /// registration's own — a symlink's own bits are meaningless to launchd, and
+  /// its *target* is somebody else's file whose mode this package has no
+  /// business propagating into `LaunchAgents`.
+  int? _existingSlotMode() {
+    final path = _plistFile.path;
+    if (FileSystemEntity.typeSync(path, followLinks: false) !=
+        FileSystemEntityType.file) {
+      return null;
+    }
+    return _plistFile.statSync().mode & 0xFFF;
   }
 
   /// Whether [file] is writable by group or other, which makes launchd refuse

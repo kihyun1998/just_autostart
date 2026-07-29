@@ -69,6 +69,22 @@ Unreleased.
   It is also now *bounded*: `disable()` no longer reads anything that can block
   indefinitely, so a FIFO planted at the plist path is left alone instead of
   hanging the call.
+- `enable()` on macOS writes the agent **into** its own slot rather than through
+  whatever occupies it. `~/Library/LaunchAgents/<label>.plist` may already be a
+  symlink — a plist kept in a dotfiles repo, say — and writing directly followed
+  it, putting this package's bytes outside the one directory it manages: a
+  symlink's target had its content replaced, and a *dangling* symlink had its
+  target created. The plist is now written beside the slot and renamed over it,
+  which by `rename(2)` replaces the link itself and leaves its target untouched.
+  A caller who deliberately symlinked that path will find it replaced by a real
+  file the first time `enable()` runs.
+- The same change fixes a false success: with a FIFO at the plist path,
+  `enable()` reported success while `isEnabled()` stayed false for ever, because
+  the bytes went into the pipe rather than to disk. A registration reported live
+  that can never launch is the one outcome this package exists not to produce.
+- Writing through a temporary file also means the agent is never briefly visible
+  carrying the permissions launchd silently refuses, and a crash mid-write can no
+  longer leave a truncated plist that `disable()` would refuse to clean up.
 - `disable()` on macOS no longer throws when the plist disappears underneath it,
   so two concurrent calls no longer make the loser fail. A plist it cannot
   *read* — as opposed to one that is absent or foreign — is still reported as a
