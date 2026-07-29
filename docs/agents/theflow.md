@@ -532,6 +532,16 @@ Everything else is gated on enumeration risk as usual.
     shortcuts, S4U and `wscript` are each closed, and the measurements behind it.
     A new mechanism question in this area is a **conformance item under the
     record**, not a new spine.
+  - **Guarding a deletion in a shared namespace** —
+    [ADR-0002](../adr/0002-guarding-a-deletion-in-a-shared-namespace.md)
+    (accepted). Five rules covering every path that can remove a registration on
+    a namespace shared with other applications — the `Run` key, the Task
+    Scheduler folder, `LaunchAgents`, and whatever comes next. How ownership is
+    decided, what may sit between the last look and the act, and why "unreadable"
+    is a failure while "absent" is a success. A new mechanism's ownership
+    question is a **conformance item under this record**, not a fresh debate.
+    Note its stated boundary: it governs *removal only*, and says nothing about
+    the write side (#23) or about `enable()` overriding a user's veto.
 
   That list is what the filing step checks before proposing a spine, so a cluster
   with a home never gets a second one — keep it current as records land.
