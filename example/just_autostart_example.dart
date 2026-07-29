@@ -7,6 +7,11 @@ import 'package:just_autostart/just_autostart.dart';
 /// Deliberately a literal rather than `Platform.resolvedExecutable`: run this
 /// file with `dart run` and that getter returns the path of the Dart runtime,
 /// which is exactly the trap the package refuses to fall into on your behalf.
+///
+/// It does not have to exist for this example to be useful. Every call below
+/// only *reads*, and a path that is not registered is answered `false` — which
+/// is the honest answer and the one your own tool gets before its first
+/// `enable()`.
 const executablePath = r'C:\Program Files\My Tool\mytool.exe';
 
 /// Reports what `just_autostart` would do on the platform this runs on.
@@ -21,9 +26,11 @@ Future<void> main() async {
     appName: 'My Tool',
     label: 'com.example.mytool',
     // The package never infers this: under `dart pub global activate`,
-    // Platform.resolvedExecutable points at the Dart runtime rather than at
-    // your tool. It is correct here because this example is run directly.
-    executablePath: Platform.resolvedExecutable,
+    // `Platform.resolvedExecutable` points at the Dart runtime rather than at
+    // your tool. So the path comes from above, where your installer would put
+    // it — an example that reached for the getter would be demonstrating the
+    // one practice this package exists to refuse.
+    executablePath: executablePath,
     args: const ['--daemon'],
   );
 
