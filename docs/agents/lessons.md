@@ -774,3 +774,13 @@ measurement that establishes it, rather than claiming a coverage the fixture
 cannot deliver. This is the entry that earns the refuting lens its cost: the
 gap-hunting lens graded the same area `CONFIRMED` on documentation only and did
 not try the mutation.
+
+**`taskExists` no longer exists** — do not grep for it. Both lenses also found
+that nothing in `lib/` called it and that it was not exported, so the 67.8% it
+had just gained was collected by tests alone while the second code path was
+permanent. It was removed in the change after #15, on the ground `CLAUDE.md`
+states directly: *existence is not enablement* is this package's recurring
+hazard, so a fast and convenient way to ask the weaker question is a trap on a
+class that can also delete another application's registration. The lesson above
+outlives the method — it is about how the mutations were chosen, not about which
+method they were aimed at.

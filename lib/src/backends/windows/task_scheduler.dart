@@ -309,56 +309,17 @@ final class WindowsTaskScheduler {
     });
   }
 
-  /// Whether a task named [name] is **registered** in [folder].
-  ///
-  /// A folder that does not exist reads as "no task" rather than as a failure:
-  /// that is the state of a machine where this package has never run.
-  ///
-  /// **Registered is not the same as enabled, and this answers the first
-  /// question only.** A user can switch a task off in the Task Scheduler UI,
-  /// which leaves it registered and stops it running — the same shape as the
-  /// `Run` key's `StartupApproved` veto, in a different store. Reading that
-  /// veto means `IRegisteredTask::get_Enabled`, and it belongs to whatever
-  /// implements `isEnabled()` on top of this. A backend that reports this
-  /// method's answer as "autostart is on" would be repeating the exact lie the
-  /// `Run` key backend exists to avoid.
-  ///
-  /// **Registered is also not the same as *ours*.** This method says a task by
-  /// that name is there, and the folder is a shared namespace, so nothing about
-  /// its answer licenses a deletion. Ownership is a separate question, and it is
-  /// asked by whoever is about to remove something — with the full read, which
-  /// this deliberately is not.
-  ///
-  /// Answered from `GetTask` alone. Spelling this as `readTask(name) != null`
-  /// read as the obvious reuse and was not: [readTask] fetches the whole task
-  /// **definition**, which is a round trip of its own — **2.12 ms, 46%** of that
-  /// read — to reach fields this question does not consult.
-  ///
-  /// **The two agree wherever [readTask] *returns*, and a test pins that.** They
-  /// no longer agree where it **throws**: `_read` continues into `get_Enabled`
-  /// and `get_Definition`, both of which raise on failure, so a task `GetTask`
-  /// finds but whose definition cannot be read is `true` here and an
-  /// `AutostartOsException` there. Before, this method went through [readTask]
-  /// and threw with it. The new answer is the better one — an existence question
-  /// should not fail because a definition is unreadable — but it is a changed
-  /// failure contract and not merely a cheaper route to the same one.
-  ///
-  /// Whether that state is reachable is **not measured**. The shape that would
-  /// produce it is another user's task under a colliding name, whose file grants
-  /// full control only to its creator (see [createTask]); it needs a second
-  /// account to plant, which lessons #24 records this suite cannot do.
-  ///
-  /// Nothing in `lib/` calls this — [WindowsTaskSchedulerBackend] needs the full
-  /// read for all three of its operations. The saving is real and currently
-  /// collected by tests only.
-  bool taskExists(String name) {
-    return _withFolder(create: false, (arena, service, folder) {
-      if (folder == nullptr) return false;
-      return _getTask(arena, folder, name) != null;
-    });
-  }
-
   /// Reads back what the task named [name] holds, or `null` when there is none.
+  ///
+  /// **There is deliberately no cheaper "is it registered?" alongside this.**
+  /// One existed and was removed: `GetTask` alone answers it, and answering it
+  /// cost a third of what this read costs. That was the argument for keeping it
+  /// and it is the argument against — *existence is not enablement* is the
+  /// recurring hazard this package is built around, so a fast, convenient way to
+  /// ask the weaker question is a trap sitting on a class that can also delete
+  /// another application's registration. Nothing in `lib/` wanted it: all three
+  /// backend operations need the whole record. A caller who genuinely wants
+  /// existence writes `readTask(name) != null` and pays for the honest answer.
   ///
   /// This is the read every decision rests on. `isEnabled()` needs all three
   /// answers — the task is there, it is *enabled*, and its action names the
