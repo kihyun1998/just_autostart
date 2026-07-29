@@ -13,11 +13,14 @@
 
 include: package:lints/recommended.yaml
 
-# Uncomment the following section to specify additional rules.
-
-# linter:
-#   rules:
-#     - camel_case_types
+linter:
+  rules:
+    # Doc comments carry load here that no test reaches — boundary rules,
+    # measured numbers, the reason a guard exists — and `recommended` puts no
+    # gate over them at all. A `[symbol]` naming something deleted passed the
+    # whole matrix once already: `taskExists` was removed and a paragraph
+    # reasoning about the deletion path kept referring to it. See #21.
+    - comment_references
 
 # analyzer:
 #   exclude:

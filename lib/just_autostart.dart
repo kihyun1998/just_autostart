@@ -14,6 +14,13 @@
 /// `LaunchAgents` directory — with no FFI and no dependencies.
 library;
 
+// Imported, not just exported, so the library documentation above can link to
+// these. `export` re-publishes a name without bringing it into this file's
+// scope, so a `[Type]` in the doc comment resolves to nothing — which the
+// analyzer only says out loud because `comment_references` is on.
+import 'src/exceptions.dart';
+import 'src/windows_options.dart';
+
 export 'src/autostart.dart';
 export 'src/autostart_backend.dart';
 export 'src/autostart_config.dart';

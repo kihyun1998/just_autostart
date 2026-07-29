@@ -8,6 +8,9 @@ import 'backends/unsupported_backend.dart';
 import 'backends/windows/windows_autostart_backend.dart';
 import 'backends/windows/windows_run_key_backend.dart';
 import 'backends/windows/windows_task_scheduler_backend.dart';
+// Imported for the doc reference on `forOperatingSystem`: the exception is
+// thrown by the unsupported backend rather than named in this file's code.
+import 'exceptions.dart';
 import 'macos_options.dart';
 import 'windows_options.dart';
 

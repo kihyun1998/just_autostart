@@ -511,6 +511,21 @@ dart test
   `dart analyze` covers it, but nothing executes it. The one defect that unit
   tests could not catch was caught by running it by hand (lessons #5) — this gap
   is recorded, not closed.
+- **`analyze` now checks doc-comment references** — `comment_references` is on
+  (#21), so a `[Symbol]` naming something that does not resolve fails the gate.
+  Demonstrated rather than assumed: a planted dangling reference exits 1. This
+  closes a real hole — `taskExists` was deleted and a paragraph reasoning about
+  the deletion path went on referring to it through the whole matrix and three
+  green CI runners, until an adversarial reading pass found it.
+  - Its reach is **one bracket at a time, not the prose around it.** It cannot
+    tell that a doc comment still *describes* removed behaviour, which is Step
+    6's actual subject and remains uncovered. It catches the name, never the
+    claim.
+  - The fix for a reference that is correct but out of scope is an `import`
+    beside the `export`, not de-bracketing: `export` re-publishes a name without
+    bringing it into the file's scope. That pair is self-policing — measured, a
+    doc reference *counts* as import usage, so removing the reference makes
+    `unused_import` fire immediately rather than leaving an orphan behind.
 - **Run each gate bare, never piped.** `dart test | tail -1 && commit` always
   commits: a pipeline's exit status is `tail`'s, and `tail` always succeeds.
 - **Never move a threshold to turn a build green.** `--fatal-infos` and
