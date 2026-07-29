@@ -784,3 +784,57 @@ hazard, so a fast and convenient way to ask the weaker question is a trap on a
 class that can also delete another application's registration. The lesson above
 outlives the method — it is about how the mutations were chosen, not about which
 method they were aimed at.
+
+---
+
+## #28 — the number that reframed a ticket, and nobody measured the thing it named — Step 5
+
+**Rule it proves:** a claim on a sacred path is credited only when a measurement
+could have killed it. Measuring *something adjacent* and labelling it with the
+claim's words is not that.
+
+#16 was filed as a performance ticket. Re-measuring before starting showed the
+saving had halved since #15, to **1.39 ms (8.0%)** on a rare, deliberate
+operation — thin. So the ticket was **reframed** around safety instead: the
+ownership guard ran in one COM session and the delete ran in the next, so the
+window in which the name could come to mean a different task was "a whole COM
+session, ~1.4 ms", and one session shrank it "about three orders of magnitude".
+
+That sentence went into two doc comments and an issue comment. **It was wrong by
+roughly 600×**, and the numbers that refute it were already on the same issue
+page.
+
+The window runs from `GetTask` to `DeleteTask`. It does not begin at the
+predicate. Everything `_read` does after `GetTask` — `get_Enabled`,
+`get_Definition`, the trigger walk, the principal, the actions — sits inside it
+in **both** shapes, and `get_Definition` alone is 2.12 ms. From #15's own
+breakdown:
+
+| | |
+| --- | --- |
+| read tail after `GetTask`, unavoidable in both shapes | 2.40 ms |
+| the second session this removes | ~1.6 ms |
+| window before → after | ~4.0 ms → ~2.4 ms, **1.7×** |
+
+Three things made it easy to get wrong, and all three are general:
+
+1. **The quantity measured was not the quantity claimed.** `1.4 ms` is the
+   *preamble*, measured in #15 for a different purpose. It was reused as "the
+   window" because both are "the cost of a second session" in prose. Lessons #9
+   is the same failure with a different subject.
+2. **The reframing happened under pressure to save the ticket.** The performance
+   case had just come apart; the safety case arrived to replace it and was not
+   held to the same bar the number it replaced had just failed.
+3. **The error flattered the change.** A claim that overstates a benefit on a
+   path with no undo is the one direction that should trigger a re-measurement
+   before it is written down, not after.
+
+It was caught by the refuting lens, which the bindings authorise only on sacred
+paths. This is the second consecutive ticket where that second lens found
+something the gap-hunting lens graded as documentation-only — after #27, where
+it broke a mutation claim.
+
+**Consequence:** before a number goes into a doc comment, name the two events it
+spans and check that the measurement you have spans the same two. And when a
+ticket's stated justification collapses and a new one is reached for, the new one
+is a *claim to verify*, not a rescue.

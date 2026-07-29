@@ -86,11 +86,22 @@ final class WindowsTaskSchedulerBackend implements AutostartBackend {
   /// different path** is not cleaned up here. `enable()` overwrites it and a
   /// user can delete it from the Task Scheduler UI. One stale task beats
   /// deleting a third party's.
+  /// The guard and the deletion happen **in one connected session**, which is
+  /// why this is `deleteTaskIf` and not a read followed by a delete. Written
+  /// the obvious way, the ownership decision came from one session and the
+  /// removal looked the task up by name again in the next, so the name could
+  /// come to mean a different task in between and the deletion would take
+  /// something the guard never saw.
+  ///
+  /// **Measured, because the obvious version of this sentence is wrong:** the
+  /// window runs from `GetTask` to `DeleteTask`, and most of it is the read
+  /// itself, which both shapes pay. It narrows from about **4.0 ms to 2.4 ms**
+  /// — 1.7×, not the orders of magnitude it looks like from here. See
+  /// [WindowsTaskScheduler.deleteTaskIf] for the breakdown and for why 2.4 ms is
+  /// near the floor this API allows.
   @override
   Future<void> disable() async {
-    if (!_isOurs(scheduler.readTask(_taskName))) return;
-
-    scheduler.deleteTask(_taskName);
+    scheduler.deleteTaskIf(_taskName, _isOurs);
   }
 
   /// Whether the executable will actually launch at login.
@@ -151,9 +162,13 @@ final class WindowsTaskSchedulerBackend implements AutostartBackend {
   ///
   /// Weaker than [isEnabled] on purpose: the arguments may have changed between
   /// releases, and a task this application owns is still its own to remove.
-  bool _isOurs(RegisteredTask? task) {
-    if (task == null) return false;
-
+  ///
+  /// Takes a **non-null** task. It used to accept `null` because `disable()`
+  /// handed it whatever `readTask` returned; both callers now check first —
+  /// [isEnabled] returns early and `deleteTaskIf` only consults a predicate for
+  /// a task that is really there. A `null`-accepting ownership guard on a
+  /// deletion path answers "not ours" quietly where nothing should have asked.
+  bool _isOurs(RegisteredTask task) {
     // **Two terms, and the second is the one the `Run` key does not need.**
     // `HKEY_CURRENT_USER` isolates users for free; the Task Scheduler tree is
     // machine-wide, so two users of the same *installation* have byte-identical

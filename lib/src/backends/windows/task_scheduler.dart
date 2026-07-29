@@ -321,10 +321,12 @@ final class WindowsTaskScheduler {
   /// backend operations need the whole record. A caller who genuinely wants
   /// existence writes `readTask(name) != null` and pays for the honest answer.
   ///
-  /// This is the read every decision rests on. `isEnabled()` needs all three
-  /// answers — the task is there, it is *enabled*, and its action names the
-  /// configured program — and `disable()` needs the third on its own, because
-  /// the folder is a shared namespace and a name match is not ownership.
+  /// This is the read `isEnabled()` rests on: it needs all three answers — the
+  /// task is there, it is *enabled*, and its action names the configured
+  /// program. `disable()` needs only the third, because the folder is a shared
+  /// namespace and a name match is not ownership — but it does not come through
+  /// here for it. It uses [deleteTaskIf], so that the read and the deletion
+  /// share one connected session rather than two.
   RegisteredTask? readTask(String name) {
     return _withFolder(create: false, (arena, service, folder) {
       if (folder == nullptr) return null;
@@ -332,13 +334,97 @@ final class WindowsTaskScheduler {
     });
   }
 
-  /// Removes the task named [name], reporting whether there was one.
+  /// Removes the task named [name] **unconditionally**, reporting whether there
+  /// was one.
   ///
   /// Returns `false` when the task or the folder was already absent, so a
   /// caller can stay idempotent without inspecting error codes.
+  ///
+  /// **Deletes whatever is registered under that name, including another
+  /// application's task.** The folder is a shared namespace and the name is
+  /// assembled from caller-supplied text, so this is the raw mechanism and not
+  /// the operation a backend wants: [deleteTaskIf] is.
+  ///
+  /// **It exists because a removal must not depend on a read that can fail.**
+  /// [deleteTaskIf] reads before it deletes, and that read raises on a task
+  /// whose definition the service will not hand back — Task Scheduler has a
+  /// documented state for exactly that, a task image it considers corrupt or
+  /// tampered with. Teardown built on the guarded form would then throw,
+  /// stranding the task and failing the folder removal behind it. "It is
+  /// cheaper" would not have been a reason; "it still works when the read does
+  /// not" is.
   bool deleteTask(String name) {
     return _withFolder(create: false, (arena, service, folder) {
       if (folder == nullptr) return false;
+      return _delete(arena, folder, _folderDeleteTask, name, 'DeleteTask');
+    });
+  }
+
+  /// Removes the task named [name] only when [isOurs] accepts what is
+  /// registered there, reporting whether it was removed.
+  ///
+  /// **Ownership is the caller's to define and this class's to apply.** What
+  /// counts as "ours" needs the configured executable path, which lives in the
+  /// backend; how to read a task and delete it without letting go of the
+  /// connection lives here. So the predicate is injected rather than
+  /// implemented — the same split that keeps every other policy out of this
+  /// file.
+  ///
+  /// **Why this exists rather than `readTask` then [deleteTask].** That pair
+  /// decides ownership in one connected session and then, in a *second* one,
+  /// looks the task up **by name again** and deletes whatever is there. The
+  /// deletion is by name in both shapes — Task Scheduler exposes no delete that
+  /// takes the `IRegisteredTask` you inspected, and no version or hash to check
+  /// against — so what is at stake is only how long the name can mean something
+  /// else between the check and the act.
+  ///
+  /// **How much shorter, measured — and it is 1.7×, not a landslide.** The
+  /// window opens at `GetTask`, not at the predicate: everything `_read` does
+  /// after it (`get_Enabled`, `get_Definition`, the trigger walk, the principal,
+  /// the actions) sits inside the window in *both* shapes, and `get_Definition`
+  /// alone is 2.12 ms of it. From the breakdown recorded in #15:
+  ///
+  /// | | measured |
+  /// | --- | --- |
+  /// | the read tail after `GetTask` — unavoidable, both shapes | 2.40 ms |
+  /// | the second session this removes — teardown, connect, `GetFolder` | ~1.6 ms |
+  /// | window before | **~4.0 ms** |
+  /// | window after | **~2.4 ms** |
+  ///
+  /// An earlier version of this comment claimed three orders of magnitude by
+  /// measuring from the predicate rather than from `GetTask`. It was wrong in
+  /// the direction that flattered the change, which is the direction a claim on
+  /// a deletion path least deserves.
+  ///
+  /// The residual is close to the floor this API allows: both ownership terms —
+  /// the action's path and the principal — hang off `get_Definition`, so the
+  /// expensive call cannot be dropped. `enabled` and `startsAtLogon` are read
+  /// inside the window for a predicate that does not consult them, which is
+  /// perhaps 200–400 µs of the 2.4 ms and the only remaining lever.
+  ///
+  /// **The predicate must be cheap, and that is the load-bearing constraint.**
+  /// [isOurs] is called exactly once, only when a task is registered, and it
+  /// runs **inside** the apartment with the service's proxies live. It is
+  /// therefore *the window* — a predicate that blocks (a prompt, a subprocess, a
+  /// slow file read) reopens exactly what this method exists to close, and can
+  /// make it arbitrarily worse than the two-session shape it replaced. It
+  /// decides ownership from the record it is handed and does nothing else.
+  ///
+  /// Two things it is *allowed* to do, recorded because the obvious guess is
+  /// wrong. It may call back into this class: `CoInitializeEx` is documented as
+  /// returning `S_FALSE` for a matching nested call, and [withCom] balances that
+  /// case, so re-entrancy is correct. And it may throw — that cancels the
+  /// deletion and unwinds the arena and the apartment through the `finally`
+  /// blocks that own them. What it may not be is asynchronous, which the
+  /// signature already refuses.
+  bool deleteTaskIf(String name, bool Function(RegisteredTask task) isOurs) {
+    return _withFolder(create: false, (arena, service, folder) {
+      if (folder == nullptr) return false;
+
+      final registered = _read(arena, folder, name);
+      if (registered == null) return false;
+      if (!isOurs(registered)) return false;
+
       return _delete(arena, folder, _folderDeleteTask, name, 'DeleteTask');
     });
   }
@@ -465,8 +551,8 @@ final class WindowsTaskScheduler {
   /// **Consequence, accepted: the missing-root guard now runs only where the
   /// root is the object of the call** — [deleteFolder], and [createTask] on the
   /// branch that has to create the folder. It does **not** run on [readTask],
-  /// [taskExists], [deleteTask], or a [createTask] whose folder already exists.
-  /// Note the third of those: `deleteTask` is a *write*, so this is not the
+  /// [deleteTask], [deleteTaskIf], or a [createTask] whose folder already
+  /// exists. Note the middle two: both are *writes*, so this is not the
   /// read/write split it first looks like.
   ///
   /// What makes that acceptable is not that the guard was "only diagnostic" —

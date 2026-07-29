@@ -517,6 +517,165 @@ void main() {
     });
   });
 
+  // The guarded delete.
+  //
+  // **What this group cannot prove, stated up front.** The reason `deleteTaskIf`
+  // exists is that the decision and the removal happen without letting go of the
+  // connection. Replacing its body with the old two-session shape —
+  // `readTask(name)`, then `deleteTask(name)` — passes **every test in this
+  // repository**, checked by planting exactly that. The difference is the *size*
+  // of the window between the guard and the delete, which is a timing property;
+  // no functional assertion can see it, and a timing assertion on a shared CI
+  // machine is a flake rather than a test. It is proved by the measurement
+  // recorded in issue #16 and by reading the two implementations.
+  //
+  // What these tests *do* pin is the guard's behaviour, and that half is well
+  // covered: ignoring the predicate's answer breaks tests in three files, most
+  // of which predate this change. The raw failure count was **nine** and the
+  // honest number is **seven** — `windows_autostart_backend_test.dart` carries
+  // five of its groups twice, byte for byte, so two of the nine were the same
+  // two assertions counted again. Recorded rather than quietly corrected,
+  // because a coverage number obtained by counting failures is only as good as
+  // the assumption that the failures are distinct.
+  //
+  // So: the dangerous half is covered seven times over, and the fast half is
+  // not covered at all.
+  //
+  // So the cases below are the ones that are actually reachable — when the
+  // predicate runs, what survives when it says no, and what the apartment looks
+  // like afterwards.
+  group('deleteTaskIf', () {
+    void createProbe() => _scheduler.createTask(
+      'Probe',
+      TaskRegistration(executablePath: _realExecutable),
+    );
+
+    test('removes the task when the predicate accepts', () {
+      createProbe();
+
+      // The count belongs on **this** path, not only on the rejecting one. A
+      // plausible wrong implementation re-reads and asks again after the
+      // predicate accepts — "double-checking to shrink the window" — which
+      // looks like more of what this change is for and is a second full read.
+      // Counting only where the predicate says no would never see it.
+      var calls = 0;
+      final removed = _scheduler.deleteTaskIf('Probe', (_) {
+        calls++;
+        return true;
+      });
+
+      expect(removed, isTrue);
+      expect(calls, 1);
+      expect(
+        schtasksSees('Probe'),
+        isFalse,
+        reason: 'Windows itself should no longer see it',
+      );
+    });
+
+    test('leaves the task alone when the predicate rejects', () {
+      createProbe();
+
+      expect(_scheduler.deleteTaskIf('Probe', (_) => false), isFalse);
+      expect(
+        schtasksSees('Probe'),
+        isTrue,
+        reason: 'a rejected task must survive — this is the whole guard',
+      );
+    });
+
+    // The side condition, not the return value: a name nothing registered must
+    // not reach the predicate at all. A predicate invoked with a fabricated
+    // record would be deciding about a task that is not there.
+    test('never consults the predicate for a task that is absent', () {
+      var calls = 0;
+      final removed = _scheduler.deleteTaskIf('NeverRegistered', (_) {
+        calls++;
+        return true;
+      });
+
+      expect(removed, isFalse);
+      expect(calls, 0);
+    });
+
+    test('never consults the predicate when the folder is absent', () {
+      _scheduler.deleteFolder();
+
+      var calls = 0;
+      final removed = _scheduler.deleteTaskIf('Probe', (_) {
+        calls++;
+        return true;
+      });
+
+      expect(removed, isFalse);
+      expect(calls, 0);
+    });
+
+    // The predicate has to see the same thing `readTask` would hand back, or
+    // the backend's ownership rule is being applied to a different object than
+    // the one it was written against.
+    test('hands the predicate what readTask would have returned', () {
+      _scheduler.createTask(
+        'Probe',
+        TaskRegistration(
+          executablePath: _realExecutable,
+          args: const ['--daemon', r'--out=C:\My Docs'],
+        ),
+      );
+      final expected = _scheduler.readTask('Probe')!;
+
+      RegisteredTask? seen;
+      var calls = 0;
+      _scheduler.deleteTaskIf('Probe', (task) {
+        calls++;
+        seen = task;
+        return false;
+      });
+
+      // Exactly once, not merely at least once: a second consultation would
+      // mean a second read, which is the round trip this whole change removes.
+      expect(calls, 1);
+      expect(seen, isNotNull);
+      expect(seen!.executablePath, expected.executablePath);
+      expect(seen!.args, expected.args);
+      expect(seen!.enabled, expected.enabled);
+      expect(seen!.startsAtLogon, expected.startsAtLogon);
+      expect(seen!.runsAsCurrentUser, expected.runsAsCurrentUser);
+    });
+
+    // A throw from the predicate has to cancel the deletion, and it has to
+    // leave the thread usable.
+    //
+    // **What the follow-up call does and does not prove.** It proves the
+    // deletion was cancelled and that the scheduler still works. It does *not*
+    // prove `CoUninitialize` ran: if it had been skipped, the thread's COM
+    // reference count would stay up, the next `CoInitializeEx` would return
+    // `S_FALSE`, and `succeeded()` accepts that — so the follow-up would pass
+    // either way. A leaked arena has no functional symptom at all. Both are
+    // proved by reading `withCom`'s and `Arena`'s `finally` blocks, not here;
+    // saying so is the point, because an assertion that cannot fail for the
+    // thing its `reason:` names is this repo's most repeated defect.
+    test(
+      'a throwing predicate deletes nothing and leaves the scheduler usable',
+      () {
+        createProbe();
+
+        expect(
+          () => _scheduler.deleteTaskIf('Probe', (_) => throw StateError('no')),
+          throwsStateError,
+        );
+        expect(
+          schtasksSees('Probe'),
+          isTrue,
+          reason: 'the deletion must not have happened',
+        );
+
+        expect(_scheduler.readTask('Probe'), isNotNull);
+        expect(_scheduler.deleteTaskIf('Probe', (_) => true), isTrue);
+      },
+    );
+  });
+
   group('deleteFolder', () {
     test('removes a folder this package created', () {
       _scheduler.createTask(
