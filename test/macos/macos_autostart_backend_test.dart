@@ -510,6 +510,7 @@ void main() {
         'test/macos/disable_fifo_probe.dart',
         scratch.path,
         label,
+        'disable',
       ]);
       addTearDown(probe.kill);
 
@@ -707,6 +708,72 @@ void main() {
             file.path,
           ),
         ),
+      );
+    });
+
+    test(
+      'raises a typed failure for a plist it cannot read',
+      () async {
+        // Distinct from the corrupt case above: this one never gets as far as the
+        // parser. Before #22 it escaped as a raw dart:io PathAccessException,
+        // outside the sealed hierarchy `AutostartException` exists to let a caller
+        // switch over — and reporting it as a plain `false` would be worse still,
+        // since the registration is there and would launch.
+        final file = plistFile('dev.justautostart.test');
+        await backend().enable();
+        expect(Process.runSync('chmod', ['000', file.path]).exitCode, 0);
+        addTearDown(() => Process.runSync('chmod', ['644', file.path]));
+
+        await expectLater(
+          backend().isEnabled(),
+          throwsA(
+            isA<AutostartOsException>().having(
+              (e) => e.errorCode,
+              'errorCode',
+              13,
+            ),
+          ),
+        );
+      },
+      skip: Platform.environment['USER'] == 'root'
+          ? 'root reads a 0000 file regardless of its mode'
+          : null,
+    );
+
+    test('is false for a FIFO at our path, without blocking on it', () async {
+      // isEnabled() is the method this package's own documentation points
+      // callers at for rendering a settings toggle, so a path that can hang it
+      // hangs the caller's UI. Measured hanging before #22 shared disable()'s
+      // reader. Run in a child process for the same reason as the disable case:
+      // the block is synchronous, so an in-process timeout cannot fire.
+      const label = 'dev.justautostart.fifo';
+      final path = plistFile(label).path;
+      expect(Process.runSync('mkfifo', [path]).exitCode, 0);
+      addTearDown(() => Process.runSync('rm', ['-f', path]));
+
+      final probe = await Process.start(Platform.resolvedExecutable, [
+        'run',
+        'test/macos/disable_fifo_probe.dart',
+        scratch.path,
+        label,
+        'isEnabled',
+      ]);
+      addTearDown(probe.kill);
+
+      final exitCode = await probe.exitCode.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          probe.kill();
+          return -1;
+        },
+      );
+
+      expect(
+        exitCode,
+        0,
+        reason: exitCode == 2
+            ? 'a FIFO is not a registration; isEnabled() must be false'
+            : 'isEnabled() must return rather than block on a FIFO',
       );
     });
   });

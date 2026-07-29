@@ -256,7 +256,19 @@ final class MacosAutostartBackend implements AutostartBackend {
   /// | `launchctl bootout` | 1,626 µs | — |
   /// | comparing the second read against the first | — | < 1 µs |
   /// | `deleteSync` | 51 µs | 51 µs |
-  /// | **total, measured end to end** | **~3,445 µs** | **49 µs** |
+  /// | **total** | **~3,445 µs** | **49 µs** |
+  ///
+  /// The *before* total is a sum of separately measured parts, not one
+  /// stopwatch — say which, or it is the labelling error `lessons.md` #28 is
+  /// about. Cross-checked against a whole cold `disable()`, which lands at
+  /// 3,247 µs (median of 15, spread 3.0–5.5 ms), so the sum is right to about
+  /// its own noise and no further. The *after* figure is one stopwatch, over
+  /// the two operations named.
+  ///
+  /// The `bootout` row is a label that was **not** loaded, which is the cheap
+  /// case and so the conservative one to quote. Booting out a genuinely loaded
+  /// agent was measured separately at 1,300 µs — if anything cheaper, so the
+  /// total is not understated by it.
   ///
   /// 56 µs in the case where the bytes changed and the guard re-parses, on the
   /// 533-byte plist this package writes. Without `activateImmediately` the old
@@ -285,6 +297,22 @@ final class MacosAutostartBackend implements AutostartBackend {
   /// that inode — and every route to that is a syscall Dart does not expose
   /// (`FileStat` carries no inode; `RandomAccessFile` cannot unlink). Closing
   /// it would mean FFI in a backend that deliberately has none.
+  ///
+  /// **It deliberately leaves the launchd disable override alone**, which is
+  /// the one store `enable()` maintains that this does not — so the asymmetry
+  /// is recorded rather than left to be rediscovered. Three measured reasons.
+  /// `launchctl` has no verb that *removes* a row unprivileged: `enable` sets
+  /// it to `enabled`, so "cleaning up" would write a row rather than retire
+  /// one. Orphan rows are what the OS itself leaves — `com.apple.Siri.agent`
+  /// and `com.apple.FolderActionsDispatcher` sit in the roster on this machine
+  /// with no agent on disk. And a row is inert while no registration exists,
+  /// because launchd has nothing to apply it to. The product reason is the one
+  /// that settles it: `enable()` overriding the user's veto is a recorded
+  /// decision made for a reason — the caller asked for autostart *on*.
+  /// `disable()` has no such mandate, and clearing a veto on the way out would
+  /// quietly make the agent *more* likely to run if anything ever recreated
+  /// the plist. Leaving it is the conservative direction as well as the cheap
+  /// one.
   @override
   Future<void> disable() async {
     final file = _plistFile;
@@ -370,7 +398,8 @@ final class MacosAutostartBackend implements AutostartBackend {
   ///   until a writer appears — for ever, if none does (reproduced on macOS
   ///   14.5, #22). Only a regular file can be a launch agent, so the type is
   ///   checked before anything opens the path. This is what bounds the window
-  ///   in [disable]; without it a re-read is a re-hang.
+  ///   in [disable]; without it a re-read is a re-hang. [isEnabled] shares this
+  ///   reader for the same reason — measured hanging on a FIFO before it did.
   /// - **The path no longer resolves.** Not only "our file was deleted": a
   ///   dangling symlink and a vanished directory component report the same
   ///   `errno`, and all three mean there is nothing to remove.
@@ -426,7 +455,15 @@ final class MacosAutostartBackend implements AutostartBackend {
   ///
   /// A plist that exists but is corrupt raises [MalformedRegistrationException]:
   /// it sits at this application's own label path, so it is a broken
-  /// registration to surface, not a foreign entry to ignore.
+  /// registration to surface, not a foreign entry to ignore. One that cannot be
+  /// *read* raises [AutostartOsException] for the same reason — an unreadable
+  /// registration is a state to report, not a quiet `false`, and it must not
+  /// escape as a raw `FileSystemException` from outside the sealed hierarchy.
+  ///
+  /// Something at the path that is not a regular file — a FIFO, a device — is
+  /// "not registered", like an absent one. It goes through the same reader as
+  /// [disable] so the two cannot disagree about what counts as a registration,
+  /// and so this method cannot block on a FIFO the way it used to (#22).
   ///
   /// The final condition is the fourth store, and the only one *outside* the
   /// file: launchd's disable overrides, which record the user switching the
@@ -436,11 +473,12 @@ final class MacosAutostartBackend implements AutostartBackend {
   @override
   Future<bool> isEnabled() async {
     final file = _plistFile;
-    if (!file.existsSync()) return false;
+    final content = _readRegistration(file);
+    if (content == null) return false;
 
     final LaunchAgentPlist parsed;
     try {
-      parsed = parseLaunchAgentPlist(file.readAsStringSync());
+      parsed = parseLaunchAgentPlist(content);
     } on MalformedRegistrationException catch (error) {
       // The pure parser has no path to name; attach ours so the caller can act
       // on the file the message points at.

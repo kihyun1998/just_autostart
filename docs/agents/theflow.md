@@ -299,6 +299,20 @@ Add to this list when a pass finds another.
   symlink loop gives **62**. So `2` means "nothing there to act on" — safe to
   treat as absent — while `13` is a registration this package cannot read, which
   must be raised rather than reported as somebody else's.
+- **An orphan disable-override row is the OS's own normal state, not a leak.**
+  Measured read-only (#22): the roster on this machine carries 29 rows, of which
+  `com.apple.Siri.agent`, `com.apple.FolderActionsDispatcher` and
+  `com.apple.ManagedClientAgent.enrollagent` name labels with **no plist on
+  disk**. So `disable()` leaving a row behind matches what macOS does to itself.
+  It is also the only option: `launchctl` has no unprivileged verb that removes
+  a row — `enable` sets it to `enabled`, so tidying up would *write* a row
+  rather than retire one, which is why every `dev.justautostart.*` label this
+  repo has ever tested is still listed as `=> enabled`. Settled as a known
+  limitation, not a ticket.
+- **launchd accepts a plist reached through a symlink.** Measured (#22):
+  `launchctl bootstrap gui/<uid> <symlink>` returned 0 and the job was loaded.
+  So a symlinked plist path is a *working* registration, which is what makes
+  the read/delete asymmetry below reachable rather than theoretical.
 - **`readAsStringSync` follows a symlink; `deleteSync` unlinks the link.**
   Measured (#22). So `enable()` through a symlinked plist path writes the file
   at the link's *target* — outside the directory this package manages — while
