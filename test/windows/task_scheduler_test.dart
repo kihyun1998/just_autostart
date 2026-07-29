@@ -530,13 +530,16 @@ void main() {
   // recorded in issue #16 and by reading the two implementations.
   //
   // What these tests *do* pin is the guard's behaviour, and that half is well
-  // covered: ignoring the predicate's answer breaks tests in three files, most
-  // of which predate this change. The raw failure count was **nine** and the
-  // honest number is **seven** — `windows_autostart_backend_test.dart` carries
-  // five of its groups twice, byte for byte, so two of the nine were the same
-  // two assertions counted again. Recorded rather than quietly corrected,
-  // because a coverage number obtained by counting failures is only as good as
-  // the assumption that the failures are distinct.
+  // covered: ignoring the predicate's answer breaks **seven** tests across
+  // three files, most of which predate this change.
+  //
+  // That number was first written as nine, counted from failures at a moment
+  // when `windows_autostart_backend_test.dart` carried five of its groups
+  // twice, so two of the nine were the same two assertions counted again. The
+  // duplication is gone (#20) and the honest figure is what stands here — but
+  // the correction is worth keeping visible, because a coverage number obtained
+  // by counting failures is only ever as good as the assumption that the
+  // failures are distinct, and nothing checks that assumption for you.
   //
   // So: the dangerous half is covered seven times over, and the fast half is
   // not covered at all.

@@ -763,6 +763,13 @@ unconditional root fetch to `_withFolder` — left the suite green. **Both of
 for either is a benchmark and a cold-process probe, neither of which lives in
 the repo.
 
+*(Every suite total quoted in this file and in #28 predates #20, which removed
+245 duplicated lines — 17 tests that had been running twice since the file was
+created. The totals were what the runner reported at the time and the arguments
+do not turn on the exact figure, so they are left as written rather than
+retro-corrected. Read any of them as 17 higher than the same suite would report
+today. That the numbers were inflated at all is #20's point.)*
+
 The two mutations were not worthless: they proved the group was not vacuous. They
 were just drawn from the same enumeration as the tests, so they could not reach
 what that enumeration had missed.
