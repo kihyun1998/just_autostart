@@ -114,6 +114,33 @@ await autostart.isEnabled();
 await autostart.disable();
 ```
 
+### These calls block the isolate they are made on
+
+The `await`s above are a formality. All three operations are synchronous
+underneath — `dart:ffi` and COM on Windows, `Process.runSync` and file I/O on
+macOS — so the `Future` you get back is **already complete**, and the calling
+isolate is occupied for the whole operation.
+
+How long depends on the mechanism, and the two are orders of magnitude apart:
+the registry `Run` key is tens of microseconds, Task Scheduler is milliseconds
+of RPC round trips to the Task Scheduler service. **Neither has an upper bound**
+— on Windows the ownership check can reach a domain controller, and on macOS
+`Process.runSync` takes no timeout — so treat any figure as a typical case and
+never as a ceiling.
+
+If you are calling from a UI isolate and cannot afford that, move the whole call:
+
+```dart
+final enabled = await Isolate.run(() => autostart.isEnabled());
+```
+
+That works because everything reachable from an `Autostart` is sendable, and
+because each operation is a single uninterrupted synchronous stretch — which is
+also why it has to be the whole call that moves. The package deliberately does
+not do this for you: a command-line tool or daemon, which is what this package
+targets, would pay for an isolate it has no use for. See
+`docs/adr/0003-what-this-packages-futures-promise.md`.
+
 ### Configuring the macOS agent
 
 A program launchd starts at login has **no terminal attached and none of a login

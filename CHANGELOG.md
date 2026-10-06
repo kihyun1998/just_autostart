@@ -121,3 +121,10 @@ Unreleased.
   execute bit — it would pass an existence check and then fail to launch at
   login. `MalformedRegistrationException` reports a plist too corrupt to read
   back.
+- **`enable()`, `disable()` and `isEnabled()` return a `Future` that is already
+  complete.** The work is synchronous on both platforms, so `await`ing one never
+  yields and the calling isolate is occupied for the whole operation. That is now
+  documented rather than implied, and neither platform's duration has an upper
+  bound. A caller that cannot afford the block wraps the whole call —
+  `await Isolate.run(() => autostart.isEnabled())` — which the package supports
+  and tests rather than doing on your behalf.

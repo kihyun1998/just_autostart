@@ -33,6 +33,34 @@ import 'windows_options.dart';
 /// The platform backend is chosen once, when the instance is built. Operations
 /// are delegated to it unchanged, so a backend's failures reach the caller
 /// exactly as thrown.
+///
+/// ## These calls block the isolate they are made on
+///
+/// [enable], [disable] and [isEnabled] return a `Future` that is **already
+/// complete** when you receive it. Nothing here is deferred: the work is
+/// `dart:ffi` and COM on Windows, `Process.runSync` and file I/O on macOS, and
+/// `await`ing one of these never yields to the event loop.
+///
+/// How long that is depends on the mechanism, and the two differ by orders of
+/// magnitude — the registry `Run` key is tens of microseconds, Task Scheduler
+/// is milliseconds of RPC round trips. **Neither has an upper bound**, on
+/// either platform, so no figure this package publishes is a ceiling.
+///
+/// A caller on a UI isolate that cannot afford the block moves the *whole*
+/// operation off it:
+///
+/// ```dart
+/// final enabled = await Isolate.run(() => autostart.isEnabled());
+/// ```
+///
+/// That works because everything reachable from an [Autostart] is sendable, and
+/// because each operation is one uninterrupted synchronous stretch — which is
+/// also why it must be the whole call that moves, not something inside it. Two
+/// costs come with it: the thrown trace carries only the worker's frames, not
+/// yours, and a fake passed to [Autostart.withBackend] does not observe its own
+/// mutations across the hop, because it is copied rather than shared.
+/// `docs/adr/0003-what-this-packages-futures-promise.md` records why the
+/// package does not take this hop for you.
 class Autostart {
   /// Wraps a backend directly.
   ///

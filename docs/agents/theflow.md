@@ -5,9 +5,10 @@ Project-specific data for the `theflow` skill. The skill holds the portable
 [`lessons.md`](lessons.md).
 
 Identity lives in [`../../CLAUDE.md`](../../CLAUDE.md). There is **no
-`CONTEXT.md` and no `docs/adr/` yet** — `docs/agents/domain.md` declares them as
-the single-context layout, and `/domain-modeling` creates them lazily. Until one
-exists, "the decision trail" below means the issue tracker.
+`CONTEXT.md` yet** — `docs/agents/domain.md` declares it as part of the
+single-context layout and `/domain-modeling` creates it lazily. `docs/adr/`
+**does** exist and carries three records; see Step 6 for what each covers. "The
+decision trail" therefore means those records plus the issue tracker.
 
 ## Reasoning bindings (project-wide)
 
@@ -566,6 +567,15 @@ Everything else is gated on enumeration risk as usual.
     question is a **conformance item under this record**, not a fresh debate.
     Note its stated boundary: it governs *removal only*, and says nothing about
     the write side (#23) or about `enable()` overriding a user's veto.
+  - **What this package's `Future`s promise, and how a duration may be stated** —
+    [ADR-0003](../adr/0003-what-this-packages-futures-promise.md) (accepted).
+    Five rules covering every operation on every backend: why the signatures stay
+    `Future` while nothing yields, that the isolate hop belongs to the caller,
+    where a hop would go if the package ever took one, and — the half that
+    reaches beyond concurrency — **what a doc comment, issue or changelog is
+    allowed to claim about a duration**. Any new timing figure in this repo is a
+    conformance item under R3: fixture, artefact, shape, and a range where the
+    spread swamps the median. No duration here is a ceiling.
 
   That list is what the filing step checks before proposing a spine, so a cluster
   with a home never gets a second one — keep it current as records land.

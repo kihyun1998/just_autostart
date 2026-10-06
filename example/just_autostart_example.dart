@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:just_autostart/just_autostart.dart';
 
@@ -75,6 +76,19 @@ Future<void> main() async {
       '${await backend.isRunningNow()}',
     );
   }
+
+  // Every call above blocked this isolate for its whole duration. `await` does
+  // not change that: the work is `dart:ffi` and COM on Windows, `Process.runSync`
+  // and file I/O on macOS, so the returned `Future` is already complete.
+  //
+  // A caller that cannot afford the block — a UI isolate rendering a settings
+  // toggle — moves the *whole* operation off its own isolate. This package does
+  // not do it for you, because a command-line tool would pay for an isolate it
+  // has no use for; `docs/adr/0003-what-this-packages-futures-promise.md`
+  // records that decision. What the package owes you is that this works:
+  final autostart = Autostart.forCurrentPlatform(config);
+  final offloaded = await Isolate.run(() => autostart.isEnabled());
+  stdout.writeln('Run key, read on another isolate — enabled: $offloaded');
 }
 
 /// Prints what [autostart] currently reports, or why it cannot answer.

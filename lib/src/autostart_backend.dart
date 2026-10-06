@@ -4,6 +4,17 @@
 /// differences between platforms live in *where* a registration is stored, not
 /// in what operations exist, which is why this interface stays at three
 /// methods across Windows, macOS, and the unsupported case.
+///
+/// **Every method here returns a `Future` that is already complete when the
+/// caller receives it.** The work is synchronous on both platforms — `dart:ffi`
+/// and COM on Windows, `Process.runSync` and file I/O on macOS — so `await`ing
+/// one of these never yields to the event loop, and the calling isolate is
+/// occupied for the whole operation. The `Future` is reserved capacity for a
+/// bounded call, not a claim that the work is deferred; see
+/// `docs/adr/0003-what-this-packages-futures-promise.md`, which also records
+/// why the durations these calls take have **no upper bound** on either
+/// platform, and how a caller who cannot afford the block moves the whole
+/// operation off its own isolate.
 abstract interface class AutostartBackend {
   /// Registers the configured executable to launch at login.
   ///

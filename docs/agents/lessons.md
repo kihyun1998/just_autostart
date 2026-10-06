@@ -980,3 +980,100 @@ walks past it.
 relies on and re-derive the call in this language. And on a shared namespace,
 prefer the primitive that acts on the **name** over the one that acts on what
 the name resolves to.
+
+---
+
+## #31 — the null control was already in my own numbers, and I read it as a regression — Step 4
+
+**Rule it proves:** when something that did **not** change moves with something
+that did, the ruler moved and not the subject. A benchmark carries its own
+control if you notice which row is unchanged code.
+
+#17's table was taken before #15 and #16 landed, so re-measuring before starting
+was correct — #16 had done exactly that and found its own headline halved. The
+re-measurement produced:
+
+| | #17's table | re-measured |
+| --- | --- | --- |
+| `runKey.isEnabled()`, warm | 33.8 µs | 57.5 µs |
+| `taskScheduler.isEnabled()`, warm | 5.20 ms | 8.31 ms |
+
+I read the second row as "the Task Scheduler path got slower after two tickets
+that removed work from it" and started looking for a regression. The refuting
+lens read the first row instead and ran one command:
+
+```
+git log -- lib/src/backends/windows/windows_run_key_backend.dart \
+           lib/src/backends/windows/registry.dart …
+```
+
+Three commits, **all of them predating #15, #16 and #20**. `runKey.isEnabled()`
+is byte-identical to the code that produced 33.8 µs, and it had moved **+70%** —
+the same direction and nearly the same proportion as the row I was investigating.
+Two numbers moving together when one of them cannot have changed is not a
+regression, it is a statement about the harness.
+
+Re-measured on a quiet machine, the control came back at **41 µs** (range 31–70)
+— #17's figure, reproduced. Nothing had regressed.
+
+**What was loading the machine was the completeness pass itself.** Two lens
+subagents were running while I measured, and the pass exists to inform the very
+numbers it was inflating. The tell was cheaper than measuring load: `readTask`
+came back at **16.4 ms** against `isEnabled()`'s **10.0 ms** in the same session
+— and `isEnabled()` *is* `readTask()` plus pure checks, so that ordering is
+impossible. A relationship that cannot hold is a better load detector than a load
+measurement, because it needs no baseline.
+
+**Consequence:** before differencing against an older table, find the row that
+provably did not change and check it reproduces — if it does not, no other row
+from that run means anything. And do not take absolute figures while a
+completeness pass is running; the interleaved comparisons survive it, the
+absolute ones do not.
+
+---
+
+## #32 — three of the four hazards I named in a decision record did not exist — Steps 1, 6
+
+**Rule it proves:** a rationale written into the repo record is a claim, and
+Step 1's "verify against the real thing" applies to the sentence you are about to
+commit as much as to the source you are reading.
+
+ADR-0003 R4 promises callers that they may move a whole operation onto their own
+isolate, which obliges this package to keep its object graph sendable. Naming
+what would break that looked like recall rather than research, and the draft
+said:
+
+> Adding a `DynamicLibrary`, `File`, `Directory` or `Pointer` **field** to any of
+> them silently revokes R4.
+
+A nine-line probe, written only because the completeness lens had reported
+`MacosAutostartBackend` crossing an isolate boundary while holding a `dart:io`
+`Directory`:
+
+```
+File            SENDABLE
+Directory       SENDABLE
+Pointer         SENDABLE
+ReceivePort     UNSENDABLE  (ArgumentError)
+DynamicLibrary  UNSENDABLE  (ArgumentError)
+```
+
+Three of the four named hazards are not hazards. The one that survived is the
+one that matters here — `DynamicLibrary` is the only unsendable type this
+package handles at all, and it is unsendable *because* the FFI handles are
+per-isolate lazy top-level `final`s rather than fields. So the correct sentence
+is both narrower and more useful: the realistic way to revoke R4 is a future
+"resolve the bindings once" refactor moving a library handle into a field.
+
+**Why the wrong version was worse than vague.** A list of four plausible types
+reads as researched and would have been inherited by the next reader, who would
+have had no reason to re-derive it — and it points attention at `File` and
+`Pointer`, which are safe, while under-weighting the one real path. `lessons.md`
+#13 is the same shape with the subject changed: there a sibling's hardening was
+adopted without checking its premise; here a plausible list was written without
+checking any of it.
+
+**Consequence:** the sendable/unsendable boundary is stated in ADR-0003 with the
+probe's result and with the note that the intuitive list is wrong, and
+`test/isolate_contract_test.dart` pins it. A claim about what would break a
+guarantee is part of the guarantee, and gets the same evidence.
